@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyc
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Logs
+logs/
+*.log
+
+# Deploy scripts (contain server credentials)
+deploy.bat
+remote_deploy.sh
+remote_start.sh
+restart.sh
+restart_qwen.sh
+restart_qwen2.sh
+start.sh
+
+# Test
+.pytest_cache/
+tests/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Storage
+storage/
