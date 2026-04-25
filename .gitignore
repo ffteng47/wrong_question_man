@@ -1,7 +1,6 @@
 # Python
 __pycache__/
 *.py[cod]
-*$$pycache__
 *.egg-info/
 .venv/
 venv/
@@ -12,34 +11,39 @@ env/
 logs/
 
 # Deploy scripts (contain server credentials)
-*/
 deploy.bat
-*deploy.bat
 remote_deploy.sh
 remote_start.sh
-restart*.sh
+restart.sh
+restart_qwen.sh
+restart_qwen2.sh
 start.sh
 
-# Flutter
-wrong_answer_client/
-.wrong_answer_client/
-wrong_answer_client_v2/
-.flutter-plugins*
-.dart_tool/
+# Test
+.pytest_cache/
+tests/
+
+# Flutter build outputs
+wrong_answer_client/build/
+wrong_answer_client/.dart_tool/
+wrong_answer_client/.flutter-plugins*
+wrong_answer_client/android/.gradle/
+wrong_answer_client/android/app/build/
+wrong_answer_client/android/app/.cxx/
+wrong_answer_client/android/app/intermediates/
+wrong_answer_client/android/build/
+wrong_answer_client/android_manifest.xml
+wrong_answer_client/file_paths.xml
 
 # IDE
 .idea/
 .vscode/
-*.iml
+*.swp
+*.swo
 
 # OS
 .DS_Store
 Thumbs.db
 
 # Storage
-*/storage/
 storage/
-
-# Build outputs
-build/
-target/
