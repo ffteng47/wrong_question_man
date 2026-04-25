@@ -1,0 +1,50 @@
+{
+  // ── Dart / Flutter ────────────────────────────────────────────────────────
+  "dart.flutterSdkPath": "D:\\github\\dev-software\\flutter",
+  "dart.openDevTools": "flutter",
+  "dart.previewFlutterUiGuides": true,
+  "dart.previewFlutterUiGuidesCustomTracking": true,
+  "dart.debugExternalPackageLibraries": false,
+  "dart.debugSdkLibraries": false,
+  "dart.showInspectorNotificationsForWidgetErrors": true,
+
+  // 保存时自动格式化（按项目代码风格）
+  "editor.formatOnSave": true,
+  "editor.formatOnType": true,
+
+  // Dart 专用：保存时自动修复 import 排序、去掉未使用的 import
+  "dart.runPubGetOnPubspecChanges": "always",
+
+  // 行宽（Dart 默认 80，这里放宽到 100）
+  "dart.lineLength": 100,
+  "[dart]": {
+    "editor.rulers": [100],
+    "editor.selectionHighlight": false,
+    "editor.suggest.snippetsPreventQuickSuggestions": false,
+    "editor.suggestSelection": "first",
+    "editor.tabCompletion": "onlySnippets",
+    "editor.wordBasedSuggestions": "off"
+  },
+
+  // ── 文件排除 ──────────────────────────────────────────────────────────────
+  "files.exclude": {
+    "**/build": true,
+    "**/.dart_tool": true,
+    "**/.packages": true,
+    "**/pubspec.lock": false
+  },
+
+  // ── 搜索排除 ──────────────────────────────────────────────────────────────
+  "search.exclude": {
+    "**/build": true,
+    "**/.dart_tool": true
+  },
+
+  // ── 代理设置（按需取消注释）────────────────────────────────────────────────
+  // 如果你需要挂代理下载依赖，取消下面两行的注释并改成你的代理端口：
+  // "http.proxy": "http://127.0.0.1:7890",
+  // "https.proxy": "http://127.0.0.1:7890",
+
+  // ── 终端 ──────────────────────────────────────────────────────────────────
+  "terminal.integrated.defaultProfile.windows": "PowerShell"
+}
