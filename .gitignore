@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$$pycache__
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+logs/
+
+# Deploy scripts (contain server credentials)
+*/
+deploy.bat
+*deploy.bat
+remote_deploy.sh
+remote_start.sh
+restart*.sh
+start.sh
+
+# Flutter
+wrong_answer_client/
+.wrong_answer_client/
+wrong_answer_client_v2/
+.flutter-plugins*
+.dart_tool/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Storage
+*/storage/
+storage/
+
+# Build outputs
+build/
+target/
