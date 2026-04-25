@@ -5,6 +5,7 @@
 //   1. 黑框问题 — 改用四边遮罩代替 BlendMode.clear
 //   2. 坐标双重偏移 — painter 直接从 imageKey local 坐标转换到 Stack 坐标
 //   3. 新增八方向拖拽手柄，支持调整选区大小
+//   4. BoxFit.contain 坐标映射 — _toImageCoords 先减去黑边偏移再计算原图坐标
 //
 import 'dart:io';
 import 'dart:math';
@@ -63,18 +64,51 @@ class _RoiSelectorState extends State<RoiSelector>
     super.dispose();
   }
 
+  /// 计算 BoxFit.contain 后图片在 widget 中的实际渲染区域
+  /// 返回 [offsetX, offsetY, renderW, renderH]
+  List<double> _computeImageRenderRect(Size widgetSize) {
+    final imgW = widget.imageWidthPx.toDouble();
+    final imgH = widget.imageHeightPx.toDouble();
+
+    final widgetRatio = widgetSize.width / widgetSize.height;
+    final imgRatio = imgW / imgH;
+
+    double renderW, renderH, offsetX, offsetY;
+    if (imgRatio > widgetRatio) {
+      // 图片更宽，以宽度为准，上下留黑边
+      renderW = widgetSize.width;
+      renderH = widgetSize.width / imgRatio;
+      offsetX = 0;
+      offsetY = (widgetSize.height - renderH) / 2;
+    } else {
+      // 图片更高或等比例，以高度为准，左右留黑边
+      renderH = widgetSize.height;
+      renderW = widgetSize.height * imgRatio;
+      offsetX = (widgetSize.width - renderW) / 2;
+      offsetY = 0;
+    }
+
+    return [offsetX, offsetY, renderW, renderH];
+  }
+
   List<double> _toImageCoords(Offset widgetStart, Offset widgetEnd) {
     final box = _imageKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null) return [0, 0, 100, 100];
 
     final size = box.size;
-    final scaleX = widget.imageWidthPx / size.width;
-    final scaleY = widget.imageHeightPx / size.height;
+    final rect = _computeImageRenderRect(size);
+    final offsetX = rect[0];
+    final offsetY = rect[1];
+    final renderW = rect[2];
+    final renderH = rect[3];
 
-    final x1 = min(widgetStart.dx, widgetEnd.dx) * scaleX;
-    final y1 = min(widgetStart.dy, widgetEnd.dy) * scaleY;
-    final x2 = max(widgetStart.dx, widgetEnd.dx) * scaleX;
-    final y2 = max(widgetStart.dy, widgetEnd.dy) * scaleY;
+    final scaleX = widget.imageWidthPx / renderW;
+    final scaleY = widget.imageHeightPx / renderH;
+
+    final x1 = (min(widgetStart.dx, widgetEnd.dx) - offsetX) * scaleX;
+    final y1 = (min(widgetStart.dy, widgetEnd.dy) - offsetY) * scaleY;
+    final x2 = (max(widgetStart.dx, widgetEnd.dx) - offsetX) * scaleX;
+    final y2 = (max(widgetStart.dy, widgetEnd.dy) - offsetY) * scaleY;
 
     return [
       x1.clamp(0, widget.imageWidthPx.toDouble()),
@@ -125,8 +159,18 @@ class _RoiSelectorState extends State<RoiSelector>
     double y2 = max(_start!.dy, _end!.dy);
 
     final box = _imageKey.currentContext?.findRenderObject() as RenderBox?;
-    final imgW = box?.size.width ?? double.infinity;
-    final imgH = box?.size.height ?? double.infinity;
+    final size = box?.size ?? Size.zero;
+    final rect = _computeImageRenderRect(size);
+    final offsetX = rect[0];
+    final offsetY = rect[1];
+    final renderW = rect[2];
+    final renderH = rect[3];
+
+    // 实际图片渲染区域的边界（widget 局部坐标）
+    final minX = offsetX;
+    final minY = offsetY;
+    final maxX = offsetX + renderW;
+    final maxY = offsetY + renderH;
 
     switch (handle) {
       case _Handle.topLeft:     x1 += delta.dx; y1 += delta.dy; break;
@@ -145,10 +189,10 @@ class _RoiSelectorState extends State<RoiSelector>
       case _Handle.none: return;
     }
 
-    x1 = x1.clamp(0, imgW - 20);
-    y1 = y1.clamp(0, imgH - 20);
-    x2 = x2.clamp(x1 + 20, imgW);
-    y2 = y2.clamp(y1 + 20, imgH);
+    x1 = x1.clamp(minX, maxX - 20);
+    y1 = y1.clamp(minY, maxY - 20);
+    x2 = x2.clamp(x1 + 20, maxX);
+    y2 = y2.clamp(y1 + 20, maxY);
 
     _start = Offset(x1, y1);
     _end   = Offset(x2, y2);
