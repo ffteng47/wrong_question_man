@@ -1,0 +1,8 @@
+# Force LF for shell/bat scripts
+*.sh text eol=lf
+deploy.bat text eol=lf
+
+# Flutter
+*.dart text
+*.yaml text
+*.md text
