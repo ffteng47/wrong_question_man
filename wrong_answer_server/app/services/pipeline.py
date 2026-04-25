@@ -149,8 +149,9 @@ async def run_extract(
     )
 
     # 注入 assets 到 Markdown 文本
-    problem_md = semantic.get("problem", ocr_text)
-    solution_md = semantic.get("solution", "")
+    # 清理 Qwen 返回的多余转义字符（\n、\text{}等）
+    problem_md = _clean_latex(semantic.get("problem", ocr_text))
+    solution_md = _clean_latex(semantic.get("solution", ""))
     if assets:
         problem_md = asset_extractor.inject_assets_into_markdown(problem_md, assets)
         solution_md = asset_extractor.inject_assets_into_markdown(solution_md, assets)
@@ -253,3 +254,16 @@ def _remap_roi(
         x2 / ow * 1000,
         y2 / oh * 1000,
     ]
+
+
+def _clean_latex(text: str) -> str:
+    """清理 Qwen 返回的 LaTeX 中的多余转义字符"""
+    if not text:
+        return text
+    # 移除 \n 转义字符
+    text = text.replace("\\n", "\n")
+    # 移除 \text{...} 标记
+    import re
+    text = re.sub(r"\\text\{", "", text)
+    text = text.replace("}\\", "}")
+    return text
