@@ -134,7 +134,7 @@ def filter_blocks_by_roi(
         if not blk.bbox or len(blk.bbox) < 4:
             continue
 
-        iou = _iou(blk.bbox, roi)
+        iou = _iob(blk.bbox, roi)
         if iou >= threshold:
             filtered.append(blk)
 
@@ -161,8 +161,35 @@ def blocks_to_text(blocks: list[ContentBlock]) -> str:
     return "\n".join(parts)
 
 
+def _iob(a: list[float], b: list[float]) -> float:
+    """
+    计算 Intersection over Block（交集 / block 自身面积）。
+    bbox 格式 [x1, y1, x2, y2]，a 为 block，b 为 ROI。
+
+    用 IoB 而非 IoU 的原因：ROI 通常远大于单个 block，
+    若用 IoU（交集/并集）则即使 block 完全在 ROI 内，
+    IoU 值也会因 ROI 面积巨大而远低于阈值，导致全部过滤。
+    IoB = 交集面积 / block 面积，block 完全在 ROI 内时 = 1.0。
+    """
+    ax1, ay1, ax2, ay2 = a[:4]
+    bx1, by1, bx2, by2 = b[:4]
+
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+
+    inter_w = max(0.0, inter_x2 - inter_x1)
+    inter_h = max(0.0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
+
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)  # block 自身面积
+
+    return inter_area / area_a if area_a > 0 else 0.0
+
+
 def _iou(a: list[float], b: list[float]) -> float:
-    """计算两个 bbox 的 IoU，bbox 格式 [x1, y1, x2, y2]"""
+    """计算两个 bbox 的 IoU，bbox 格式 [x1, y1, x2, y2]（保留备用）"""
     ax1, ay1, ax2, ay2 = a[:4]
     bx1, by1, bx2, by2 = b[:4]
 

@@ -1,17 +1,25 @@
 // lib/widgets/roi_selector.dart
 //
 // 核心交互组件：在图片上手指拖拽画框选取错题区域
-// 坐标自动换算回原图像素（考虑图片缩放比例）
+// 修复：
+//   1. 黑框问题 — 改用四边遮罩代替 BlendMode.clear
+//   2. 坐标双重偏移 — painter 直接从 imageKey local 坐标转换到 Stack 坐标
+//   3. 新增八方向拖拽手柄，支持调整选区大小
 //
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import '../utils/theme.dart';
 
+enum _Handle {
+  none, topLeft, top, topRight, right,
+  bottomRight, bottom, bottomLeft, left, move
+}
+
 class RoiSelector extends StatefulWidget {
   final File imageFile;
-  final int imageWidthPx;    // 原图宽度（服务端返回）
-  final int imageHeightPx;   // 原图高度
+  final int imageWidthPx;
+  final int imageHeightPx;
   final void Function(List<double> roiBbox) onConfirm;
 
   const RoiSelector({
@@ -31,8 +39,12 @@ class _RoiSelectorState extends State<RoiSelector>
   Offset? _start;
   Offset? _end;
   final _imageKey = GlobalKey();
+
   late AnimationController _pulseCtrl;
   late Animation<double> _pulseAnim;
+
+  _Handle _activeHandle = _Handle.none;
+  static const double _handleHitRadius = 20.0;
 
   @override
   void initState() {
@@ -51,7 +63,6 @@ class _RoiSelectorState extends State<RoiSelector>
     super.dispose();
   }
 
-  // 把 widget 坐标转换为原图像素坐标
   List<double> _toImageCoords(Offset widgetStart, Offset widgetEnd) {
     final box = _imageKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null) return [0, 0, 100, 100];
@@ -78,11 +89,75 @@ class _RoiSelectorState extends State<RoiSelector>
       ((_end!.dx - _start!.dx).abs() > 10 ||
        (_end!.dy - _start!.dy).abs() > 10);
 
+  // 将全局坐标转为 imageKey 的 local 坐标
+  Offset? _toImageLocal(Offset global) {
+    final box = _imageKey.currentContext?.findRenderObject() as RenderBox?;
+    return box?.globalToLocal(global);
+  }
+
+  Rect get _selectionRect => Rect.fromPoints(_start!, _end!);
+
+  _Handle _hitHandle(Offset local) {
+    if (!_hasSelection) return _Handle.none;
+    final r = _selectionRect;
+    final points = <_Handle, Offset>{
+      _Handle.topLeft:     r.topLeft,
+      _Handle.topRight:    r.topRight,
+      _Handle.bottomLeft:  r.bottomLeft,
+      _Handle.bottomRight: r.bottomRight,
+      _Handle.top:         Offset(r.center.dx, r.top),
+      _Handle.bottom:      Offset(r.center.dx, r.bottom),
+      _Handle.left:        Offset(r.left, r.center.dy),
+      _Handle.right:       Offset(r.right, r.center.dy),
+    };
+    for (final e in points.entries) {
+      if ((local - e.value).distance < _handleHitRadius) return e.key;
+    }
+    if (r.contains(local)) return _Handle.move;
+    return _Handle.none;
+  }
+
+  void _applyHandleDrag(_Handle handle, Offset delta) {
+    if (_start == null || _end == null) return;
+    double x1 = min(_start!.dx, _end!.dx);
+    double y1 = min(_start!.dy, _end!.dy);
+    double x2 = max(_start!.dx, _end!.dx);
+    double y2 = max(_start!.dy, _end!.dy);
+
+    final box = _imageKey.currentContext?.findRenderObject() as RenderBox?;
+    final imgW = box?.size.width ?? double.infinity;
+    final imgH = box?.size.height ?? double.infinity;
+
+    switch (handle) {
+      case _Handle.topLeft:     x1 += delta.dx; y1 += delta.dy; break;
+      case _Handle.top:         y1 += delta.dy; break;
+      case _Handle.topRight:    x2 += delta.dx; y1 += delta.dy; break;
+      case _Handle.right:       x2 += delta.dx; break;
+      case _Handle.bottomRight: x2 += delta.dx; y2 += delta.dy; break;
+      case _Handle.bottom:      y2 += delta.dy; break;
+      case _Handle.bottomLeft:  x1 += delta.dx; y2 += delta.dy; break;
+      case _Handle.left:        x1 += delta.dx; break;
+      case _Handle.move:
+        final w = x2 - x1; final h = y2 - y1;
+        x1 += delta.dx; x2 = x1 + w;
+        y1 += delta.dy; y2 = y1 + h;
+        break;
+      case _Handle.none: return;
+    }
+
+    x1 = x1.clamp(0, imgW - 20);
+    y1 = y1.clamp(0, imgH - 20);
+    x2 = x2.clamp(x1 + 20, imgW);
+    y2 = y2.clamp(y1 + 20, imgH);
+
+    _start = Offset(x1, y1);
+    _end   = Offset(x2, y2);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // ── 提示文字 ────────────────────────────────────────────────────────
         Container(
           padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
           color: AppColors.bg1,
@@ -97,10 +172,12 @@ class _RoiSelectorState extends State<RoiSelector>
                 ),
               ),
               const SizedBox(width: 8),
-              const Expanded(
+              Expanded(
                 child: Text(
-                  '在图片上拖拽选取错题区域',
-                  style: TextStyle(
+                  _hasSelection
+                      ? '拖动角点/边线调整选区，或重新拖拽画框'
+                      : '在图片上拖拽选取错题区域',
+                  style: const TextStyle(
                     color: AppColors.textSecondary,
                     fontSize: 13,
                   ),
@@ -120,43 +197,54 @@ class _RoiSelectorState extends State<RoiSelector>
           ),
         ),
 
-        // ── 图片 + 框选层 ────────────────────────────────────────────────────
         Expanded(
           child: GestureDetector(
             onPanStart: (d) {
-              final box = _imageKey.currentContext?.findRenderObject() as RenderBox?;
-              if (box == null) return;
-              final local = box.globalToLocal(d.globalPosition);
-              setState(() { _start = local; _end = local; });
+              final local = _toImageLocal(d.globalPosition);
+              if (local == null) return;
+
+              final handle = _hitHandle(local);
+              if (handle != _Handle.none) {
+                setState(() => _activeHandle = handle);
+                return;
+              }
+
+              // 开始新画框
+              setState(() {
+                _activeHandle = _Handle.none;
+                _start = local;
+                _end = local;
+              });
             },
             onPanUpdate: (d) {
-              final box = _imageKey.currentContext?.findRenderObject() as RenderBox?;
-              if (box == null) return;
-              final local = box.globalToLocal(d.globalPosition);
-              setState(() { _end = local; });
+              final local = _toImageLocal(d.globalPosition);
+              if (local == null) return;
+              setState(() {
+                if (_activeHandle != _Handle.none) {
+                  _applyHandleDrag(_activeHandle, d.delta);
+                } else {
+                  _end = local;
+                }
+              });
             },
             onPanEnd: (_) {
-              // 框选完成，不自动确认，让用户点按钮
+              setState(() => _activeHandle = _Handle.none);
             },
             child: Stack(
               fit: StackFit.expand,
               children: [
-                // 原图
                 Image.file(
                   widget.imageFile,
                   key: _imageKey,
                   fit: BoxFit.contain,
                   gaplessPlayback: true,
                 ),
-                // 选框覆盖层
                 if (_hasSelection)
                   Positioned.fill(
-                    child: CustomPaint(
-                      painter: _RoiPainter(
-                        start: _start!,
-                        end: _end!,
-                        imageKey: _imageKey,
-                      ),
+                    child: _SelectionOverlay(
+                      start: _start!,
+                      end: _end!,
+                      imageKey: _imageKey,
                     ),
                   ),
               ],
@@ -164,7 +252,6 @@ class _RoiSelectorState extends State<RoiSelector>
           ),
         ),
 
-        // ── 确认按钮 ─────────────────────────────────────────────────────────
         Container(
           padding: const EdgeInsets.all(16),
           color: AppColors.bg1,
@@ -172,8 +259,7 @@ class _RoiSelectorState extends State<RoiSelector>
             width: double.infinity,
             child: ElevatedButton.icon(
               onPressed: _hasSelection
-                  ? () => widget.onConfirm(
-                        _toImageCoords(_start!, _end!))
+                  ? () => widget.onConfirm(_toImageCoords(_start!, _end!))
                   : null,
               icon: const Icon(Icons.crop, size: 18),
               label: const Text('确认选区，开始分析'),
@@ -185,52 +271,81 @@ class _RoiSelectorState extends State<RoiSelector>
   }
 }
 
-// ── 选框绘制器 ────────────────────────────────────────────────────────────────
-class _RoiPainter extends CustomPainter {
+// ── 选框覆盖层（用 Stack + 四个遮罩 Widget 代替 CustomPaint BlendMode）──────
+class _SelectionOverlay extends StatelessWidget {
   final Offset start;
   final Offset end;
   final GlobalKey imageKey;
 
-  _RoiPainter({required this.start, required this.end, required this.imageKey});
+  const _SelectionOverlay({
+    required this.start,
+    required this.end,
+    required this.imageKey,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // 把 imageKey local 坐标转成当前 overlay 坐标
+    // overlay 是 Positioned.fill，与 Stack 同原点
+    // imageKey widget 在 Stack 内可能有偏移（BoxFit.contain 留边）
+    final box = imageKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return const SizedBox.shrink();
+
+    // 图片左上角在 Stack 中的位置
+    // 父级 RenderBox（Stack）
+    RenderBox? stackBox;
+    RenderObject? cur = box.parent;
+    while (cur != null) {
+      if (cur is RenderBox && cur != box) { stackBox = cur; break; }
+      cur = cur.parent;
+    }
+    final imgTopLeft = stackBox != null
+        ? stackBox.globalToLocal(box.localToGlobal(Offset.zero))
+        : Offset.zero;
+
+    final s = start + imgTopLeft;
+    final e = end   + imgTopLeft;
+    final rect = Rect.fromPoints(s, e);
+
+    return CustomPaint(
+      painter: _RoiPainter(rect: rect),
+    );
+  }
+}
+
+// ── CustomPainter（纯绘制，不处理坐标转换）──────────────────────────────────
+class _RoiPainter extends CustomPainter {
+  final Rect rect;
+  _RoiPainter({required this.rect});
 
   @override
   void paint(Canvas canvas, Size size) {
-    final box = imageKey.currentContext?.findRenderObject() as RenderBox?;
-    if (box == null) return;
+    final maskColor = Colors.black.withOpacity(0.45);
+    final maskPaint = Paint()..color = maskColor;
 
-    // 图片在 Stack 中的偏移（BoxFit.contain 留边）
-    final imgSize = box.size;
-    final imgOffset = box.localToGlobal(Offset.zero);
-    final stackOffset = (imageKey.currentContext
-        ?.findAncestorRenderObjectOfType<RenderBox>())
-        ?.globalToLocal(imgOffset) ?? Offset.zero;
+    // 四边遮罩（完全避开 BlendMode.clear 的黑框问题）
+    canvas.drawRect(Rect.fromLTRB(0, 0, size.width, rect.top), maskPaint);
+    canvas.drawRect(Rect.fromLTRB(0, rect.bottom, size.width, size.height), maskPaint);
+    canvas.drawRect(Rect.fromLTRB(0, rect.top, rect.left, rect.bottom), maskPaint);
+    canvas.drawRect(Rect.fromLTRB(rect.right, rect.top, size.width, rect.bottom), maskPaint);
 
-    final rect = Rect.fromPoints(
-      start + stackOffset,
-      end + stackOffset,
+    // 边框
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..color = AppColors.amber
+        ..strokeWidth = 2
+        ..style = PaintingStyle.stroke,
     );
 
-    // 半透明遮罩
-    final maskPaint = Paint()..color = Colors.black45;
-    canvas.drawRect(Offset.zero & size, maskPaint);
-
-    // 清除选区内的遮罩
-    canvas.drawRect(rect, Paint()..blendMode = BlendMode.clear);
-
-    // 选框边线
-    final borderPaint = Paint()
-      ..color = AppColors.amber
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke;
-    canvas.drawRect(rect, borderPaint);
-
-    // 四角加粗
+    // 四角粗线
     _drawCorners(canvas, rect);
 
+    // 边中点小圆手柄
+    _drawMidHandles(canvas, rect);
+
     // 尺寸标注
-    final w = (end.dx - start.dx).abs();
-    final h = (end.dy - start.dy).abs();
-    final label = '${w.toStringAsFixed(0)} × ${h.toStringAsFixed(0)}';
+    final label = '${rect.width.toStringAsFixed(0)} × ${rect.height.toStringAsFixed(0)}';
     final tp = TextPainter(
       text: TextSpan(
         text: label,
@@ -242,32 +357,45 @@ class _RoiPainter extends CustomPainter {
       ),
       textDirection: TextDirection.ltr,
     )..layout();
-    tp.paint(canvas, rect.topLeft + const Offset(4, -18));
+    final labelY = rect.top > 20 ? rect.top - 18 : rect.bottom + 4;
+    tp.paint(canvas, Offset(rect.left + 4, labelY));
   }
 
-  void _drawCorners(Canvas canvas, Rect rect) {
-    const len = 12.0;
+  void _drawCorners(Canvas canvas, Rect r) {
+    const len = 14.0;
     final p = Paint()
       ..color = AppColors.amber
-      ..strokeWidth = 3
+      ..strokeWidth = 3.5
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round;
 
-    // 左上
-    canvas.drawLine(rect.topLeft, rect.topLeft + const Offset(len, 0), p);
-    canvas.drawLine(rect.topLeft, rect.topLeft + const Offset(0, len), p);
-    // 右上
-    canvas.drawLine(rect.topRight, rect.topRight + const Offset(-len, 0), p);
-    canvas.drawLine(rect.topRight, rect.topRight + const Offset(0, len), p);
-    // 左下
-    canvas.drawLine(rect.bottomLeft, rect.bottomLeft + const Offset(len, 0), p);
-    canvas.drawLine(rect.bottomLeft, rect.bottomLeft + const Offset(0, -len), p);
-    // 右下
-    canvas.drawLine(rect.bottomRight, rect.bottomRight + const Offset(-len, 0), p);
-    canvas.drawLine(rect.bottomRight, rect.bottomRight + const Offset(0, -len), p);
+    for (final corner in [r.topLeft, r.topRight, r.bottomLeft, r.bottomRight]) {
+      final sx = corner == r.topLeft || corner == r.bottomLeft ? 1.0 : -1.0;
+      final sy = corner == r.topLeft || corner == r.topRight ? 1.0 : -1.0;
+      canvas.drawLine(corner, corner + Offset(len * sx, 0), p);
+      canvas.drawLine(corner, corner + Offset(0, len * sy), p);
+    }
+  }
+
+  void _drawMidHandles(Canvas canvas, Rect r) {
+    const radius = 5.5;
+    final fill   = Paint()..color = AppColors.amber;
+    final stroke = Paint()
+      ..color = Colors.white
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+
+    for (final pt in [
+      Offset(r.center.dx, r.top),
+      Offset(r.center.dx, r.bottom),
+      Offset(r.left,  r.center.dy),
+      Offset(r.right, r.center.dy),
+    ]) {
+      canvas.drawCircle(pt, radius, fill);
+      canvas.drawCircle(pt, radius, stroke);
+    }
   }
 
   @override
-  bool shouldRepaint(_RoiPainter old) =>
-      old.start != start || old.end != end;
+  bool shouldRepaint(_RoiPainter old) => old.rect != rect;
 }
