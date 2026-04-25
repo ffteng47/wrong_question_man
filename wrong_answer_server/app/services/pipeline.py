@@ -81,7 +81,7 @@ async def run_extract(
     originals_dir: Path,
     roi_bbox: list[float],
     image_source: str = "camera",
-    enable_semantic: bool = False,
+    enable_semantic: bool = True,
 ) -> ExtractResponse:
     """
     Stage2：从缓存 blocks 筛选 ROI → Qwen 语义分析 → Asset 裁切 → 组装记录
@@ -149,8 +149,8 @@ async def run_extract(
     )
 
     # 注入 assets 到 Markdown 文本
-    # 不调用 Qwen 分析时，直接使用 OCR 文本作为题目
-    problem_md = ocr_text
+    # 使用 Qwen 返回的 problem 作为题目（Qwen 已过滤学生答案）
+    problem_md = semantic.get("problem", ocr_text)
     solution_md = semantic.get("solution", "")
     if assets:
         problem_md = asset_extractor.inject_assets_into_markdown(problem_md, assets)

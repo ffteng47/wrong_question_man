@@ -63,7 +63,7 @@ class ApiClient {
     required String imageId,
     required List<double> roiBbox,
     String imageSource = 'camera',
-    bool enableSemantic = false,
+    bool enableSemantic = true,
     void Function(String stage)? onStageChange,
   }) async {
     onStageChange?.call('OCR 识别中…');

@@ -37,72 +37,50 @@ def _load_model():
     return _model, _processor
 
 
-# ── Qwen 输出的 JSON Schema（语义字段子集）────────────────────────────────────
+# ── Qwen 输出的 JSON Schema（仅提取题目）────────────────────────────────────
 SEMANTIC_SCHEMA = {
     "type": "object",
-    "required": [
-        "type", "seq", "sub_seq",
-        "problem", "answer", "solution",
-        "subject", "grade", "chapters",
-        "knowledge_points", "key_points",
-        "difficulty", "difficulty_desc",
-        "error_analysis", "tags"
-    ],
+    "required": ["problem"],
     "properties": {
-        "type": {
+        "problem": {
             "type": "string",
-            "enum": ["选择题", "多选题", "填空题", "计算题", "证明题", "应用题", "作图题", "综合题", "未知"]
+            "description": "仅提取完整的题目原文（题干），保留 LaTeX 公式 $...$ 格式。自动过滤学生答题痕迹。"
         },
+        "type": {"type": "string"},
         "seq": {"type": ["integer", "null"]},
         "sub_seq": {"type": ["string", "null"]},
-        "problem": {"type": "string", "description": "题干 Markdown，LaTeX 用 $...$ 包裹"},
         "answer": {"type": "string"},
-        "solution": {"type": "string", "description": "解题过程 Markdown"},
-        "subject": {
-            "type": "string",
-            "enum": ["语文", "数学", "英语", "物理", "化学", "生物", "历史", "地理", "政治", "未知"]
-        },
-        "grade": {
-            "type": "string",
-            "enum": ["初一", "初二", "初三", "高一", "高二", "高三", "未知"]
-        },
+        "solution": {"type": "string"},
+        "subject": {"type": "string"},
+        "grade": {"type": "string"},
         "chapters": {"type": "array", "items": {"type": "string"}},
         "knowledge_points": {"type": "array", "items": {"type": "string"}},
-        "key_points": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "每条说明考察的能力，不超过 3 条"
-        },
+        "key_points": {"type": "array", "items": {"type": "string"}},
         "difficulty": {"type": "integer", "minimum": 1, "maximum": 5},
         "difficulty_desc": {"type": "string"},
         "error_analysis": {
             "type": "object",
             "properties": {
                 "student_answer": {"type": "string"},
-                "error_category": {
-                    "type": "string",
-                    "enum": ["概念混淆", "计算失误", "审题不清", "知识缺漏", "方法选错", "粗心大意", "未知"]
-                },
+                "error_category": {"type": "string"},
                 "error_desc": {"type": "string"},
                 "prevention_tip": {"type": "string"}
-            },
-            "required": ["student_answer", "error_category", "error_desc", "prevention_tip"]
+            }
         },
         "tags": {"type": "array", "items": {"type": "string"}}
-    },
-    "additionalProperties": False
+    }
 }
 
 _SYSTEM_PROMPT = (
-    "你是专业的中学题目分析助手。\n"
-    "请从给定的 OCR 文本中分析题目，填充结构化信息。\n"
+    "你是中学题目提取助手。\n"
+    "任务：从给定的 OCR 文本中，仅提取**完整的题目原文**（题干）。\n"
     "规则：\n"
-    "1. 所有数学公式用 $...$ 包裹（行内），多行公式用 $$...$$\n"
-    "2. problem/answer/solution 字段使用 Markdown 格式\n"
-    "3. 若图片已用 [图片: xxx] 标记，在对应 Markdown 中保留占位\n"
-    "4. 若 OCR 文本中有学生的错误解答（红笔批改等），填入 error_analysis.student_answer\n"
+    "1. 只返回题目本身，**不要**返回学生答案、解题过程、错因分析\n"
+    "2. 如果 OCR 文本中包含学生答题痕迹（如红笔批改、手写解答），请自动过滤\n"
+    "3. 数学公式保留 $...$ 格式（行内）或 $$...$$ 格式（块级）\n"
+    "4. 题目中的图片占位符 [图片: xxx] 请保留\n"
     "5. 必须返回合法 JSON，不得包含任何其他内容、解释或 Markdown 代码块\n"
-    "6. JSON 必须严格符合以下 Schema，字段不能多也不能少\n"
+    "6. JSON 中 problem 字段必填，其他字段可空\n"
 )
 
 
