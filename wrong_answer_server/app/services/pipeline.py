@@ -44,10 +44,7 @@ async def run_upload(
     img = cv2.imread(str(original_path))
     height, width = img.shape[:2]
 
-    # MinerU pipeline 后端会对图片做内部变换（透视矫正/缩放），
-    # 导致 blocks 坐标系与原图不同。通过 blocks bbox 范围推算其实际坐标系大小。
-    mineru_w, mineru_h = _infer_mineru_size(blocks, width, height)
-    logger.info(f"原图尺寸: {width}x{height}, MinerU 坐标系推算: {mineru_w}x{mineru_h}")
+    logger.info(f"原图尺寸: {width}x{height}, blocks={len(blocks)}")
 
     elapsed = int((time.perf_counter() - t0) * 1000)
     logger.info(f"run_upload 完成: {elapsed}ms, {len(blocks)} blocks, conf={min_conf:.3f}")
@@ -59,14 +56,12 @@ async def run_upload(
     ]
 
     # 把完整 blocks 缓存在内存（按 image_id），供 extract 阶段复用
-    # 同时保存原图尺寸和 MinerU 坐标系尺寸，用于 extract 阶段坐标映射
     import json
     cache_path = original_path.parent / f"{original_path.stem}_blocks.json"
     cache_path.write_text(
         json.dumps({
             "blocks": [b.model_dump() for b in blocks],
             "original_size": [width, height],
-            "mineru_size": [mineru_w, mineru_h],
         }, ensure_ascii=False),
         encoding="utf-8",
     )
@@ -96,7 +91,7 @@ async def run_extract(
 
     # ── 找到原图和缓存 blocks ─────────────────────────────────────────────
     original_path = _find_original(originals_dir, image_id)
-    blocks, original_size, mineru_size = _load_cached_blocks(originals_dir, image_id)
+    blocks, original_size = _load_cached_blocks(originals_dir, image_id)
 
     # 若缓存 miss，重新解析
     if not blocks:
@@ -106,12 +101,11 @@ async def run_extract(
         _img = _cv2.imread(str(original_path))
         _h, _w = _img.shape[:2]
         original_size = [_w, _h]
-        mineru_size = _infer_mineru_size(blocks, _w, _h)
 
-    # ── 将客户端 ROI（原图坐标系）映射到 MinerU 坐标系 ──────────────────
-    mapped_roi = _remap_roi(roi_bbox, original_size, mineru_size)
+    # ── 将客户端 ROI（原图像素坐标）映射到 MinerU content_list 0~1000 坐标系 ──
+    mapped_roi = _remap_roi(roi_bbox, original_size)
     logger.info(
-        f"ROI 坐标映射: 原图{original_size} → MinerU{mineru_size}, "
+        f"ROI 坐标映射: 原图{original_size} → MinerU 0~1000, "
         f"原始ROI={[round(v,1) for v in roi_bbox]}, "
         f"映射后ROI={[round(v,1) for v in mapped_roi]}"
     )
@@ -212,70 +206,50 @@ def _find_original(originals_dir: Path, image_id: str) -> Path:
 
 def _load_cached_blocks(
     originals_dir: Path, image_id: str
-) -> tuple[list[ContentBlock], list[int], list[int]]:
+) -> tuple[list[ContentBlock], list[int]]:
     """
     读取 run_upload 写入的 blocks 缓存。
-    返回 (blocks, original_size[w,h], mineru_size[w,h])。
+    返回 (blocks, original_size[w,h])。
     缓存未命中时返回空列表和零尺寸。
     """
     import json
     cache_path = originals_dir / f"{image_id}_blocks.json"
     if not cache_path.exists():
-        return [], [0, 0], [0, 0]
+        return [], [0, 0]
     data = json.loads(cache_path.read_text(encoding="utf-8"))
 
     # 兼容旧格式（纯列表）和新格式（带尺寸的字典）
     if isinstance(data, list):
         blocks = [ContentBlock(**b) for b in data]
-        return blocks, [0, 0], [0, 0]
+        return blocks, [0, 0]
 
     blocks = [ContentBlock(**b) for b in data["blocks"]]
     original_size = data.get("original_size", [0, 0])
-    mineru_size = data.get("mineru_size", [0, 0])
-    return blocks, original_size, mineru_size
-
-
-def _infer_mineru_size(blocks: list[ContentBlock], orig_w: int, orig_h: int) -> list[int]:
-    """
-    通过 blocks 的 bbox 范围推算 MinerU 实际输出的坐标系尺寸。
-    若 blocks 为空或推算值与原图相差不大，则直接返回原图尺寸（坐标系一致）。
-    """
-    if not blocks:
-        return [orig_w, orig_h]
-
-    bboxes = [b.bbox for b in blocks if b.bbox and len(b.bbox) >= 4]
-    if not bboxes:
-        return [orig_w, orig_h]
-
-    max_x = max(bb[2] for bb in bboxes)
-    max_y = max(bb[3] for bb in bboxes)
-
-    # 若推算尺寸与原图接近（误差 <10%），认为坐标系一致
-    if max_x > orig_w * 0.9 and max_y > orig_h * 0.9:
-        return [orig_w, orig_h]
-
-    # MinerU 通常会在内容周围留白，加 10% 边距估算页面尺寸
-    inferred_w = int(max_x * 1.10)
-    inferred_h = int(max_y * 1.10)
-    return [inferred_w, inferred_h]
+    return blocks, original_size
 
 
 def _remap_roi(
     roi: list[float],
     original_size: list[int],
-    mineru_size: list[int],
 ) -> list[float]:
     """
-    将客户端传来的 ROI 坐标从原图坐标系映射到 MinerU 坐标系。
-    原图尺寸为零或与 MinerU 尺寸相同时直接返回原始 ROI。
+    将客户端传来的 ROI 坐标从原图像素坐标映射到 MinerU content_list 0~1000 坐标系。
+
+    MinerU 官方文档明确说明：content_list 中的 bbox 是 mapped to a range of 0-1000
+    的归一化坐标（相对于原图尺寸的百分比 × 1000）。
+    因此映射公式为：x_mu = x_orig / orig_w * 1000
+
+    参考：https://opendatalab.github.io/MinerU/reference/output_files/
     """
     ow, oh = original_size
-    mw, mh = mineru_size
 
-    if ow == 0 or oh == 0 or (ow == mw and oh == mh):
+    if ow == 0 or oh == 0:
         return roi
 
-    sx = mw / ow
-    sy = mh / oh
     x1, y1, x2, y2 = roi[:4]
-    return [x1 * sx, y1 * sy, x2 * sx, y2 * sy]
+    return [
+        x1 / ow * 1000,
+        y1 / oh * 1000,
+        x2 / ow * 1000,
+        y2 / oh * 1000,
+    ]
