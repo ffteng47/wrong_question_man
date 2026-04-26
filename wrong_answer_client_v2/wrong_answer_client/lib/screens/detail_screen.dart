@@ -4,7 +4,6 @@
 //
 import 'package:flutter/material.dart';
 import '../models/wrong_answer_record.dart';
-import '../services/sync_service.dart';
 import '../utils/db_helper.dart';
 import '../utils/theme.dart';
 import '../widgets/math_markdown.dart';
@@ -22,7 +21,6 @@ class _DetailScreenState extends State<DetailScreen>
   late WrongAnswerRecord _record;
   late TabController _tabs;
   bool _showAnswer = false;
-  bool _syncing = false;
 
   @override
   void initState() {
@@ -45,75 +43,12 @@ class _DetailScreenState extends State<DetailScreen>
       SnackBar(content: Text('已标记为「${AppConst.reviewLabels[status]}」')));
   }
 
-  Future<void> _syncToSemec() async {
-    if (!SyncService.instance.isLoggedIn) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('未登录 semecTeaching，请先到设置页登录'),
-          backgroundColor: AppColors.amber,
-        ),
-      );
-      return;
-    }
-
-    setState(() => _syncing = true);
-    try {
-      final result = await SyncService.instance.syncRecord(_record);
-      if (mounted) {
-        if (result.success) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('✓ 已同步到云端 (ID: ${result.incorrectId})'),
-              backgroundColor: AppColors.green.withOpacity(0.8),
-            ),
-          );
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('同步失败: ${result.error}'),
-              backgroundColor: AppColors.amber,
-            ),
-          );
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('同步异常: $e'),
-            backgroundColor: AppColors.red,
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _syncing = false);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.bg0,
       appBar: AppBar(
         title: Text('${_record.subject}  ${_record.grade}'),
-        actions: [
-          if (_syncing)
-            const Padding(
-              padding: EdgeInsets.all(14),
-              child: SizedBox(
-                width: 20, height: 20,
-                child: CircularProgressIndicator(
-                    strokeWidth: 2, color: AppColors.amber),
-              ),
-            )
-          else
-            IconButton(
-              icon: const Icon(Icons.cloud_upload_outlined,
-                  color: AppColors.textSecondary),
-              tooltip: '同步到 semecTeaching',
-              onPressed: _syncToSemec,
-            ),
-        ],
         bottom: TabBar(
           controller: _tabs,
           labelColor: AppColors.amber,

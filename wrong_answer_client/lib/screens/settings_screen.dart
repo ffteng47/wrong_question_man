@@ -1,6 +1,8 @@
 // lib/screens/settings_screen.dart
 import 'package:flutter/material.dart';
 import '../api/api_client.dart';
+import '../api/semec_teaching_api.dart';
+import '../services/sync_service.dart';
 import '../utils/theme.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -12,13 +14,40 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final _urlCtrl = TextEditingController(text: AppConst.baseUrl);
+  final _semecUrlCtrl = TextEditingController(text: SemecTeachingApi.instance.baseUrl);
+  final _semecUserCtrl = TextEditingController();
+  final _semecPassCtrl = TextEditingController();
+
   bool _testing = false;
   Map<String, dynamic>? _health;
   String? _error;
 
+  bool _semecLoggingIn = false;
+  String? _semecError;
+  SemecUser? _semecUser;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSemecUser();
+  }
+
+  Future<void> _loadSemecUser() async {
+    // 触发 token 加载（isLoggedIn getter 内部会异步加载，但返回值是 bool）
+    SemecTeachingApi.instance.isLoggedIn;
+    if (mounted) {
+      setState(() {
+        _semecUser = SyncService.instance.currentUser;
+      });
+    }
+  }
+
   @override
   void dispose() {
     _urlCtrl.dispose();
+    _semecUrlCtrl.dispose();
+    _semecUserCtrl.dispose();
+    _semecPassCtrl.dispose();
     super.dispose();
   }
 
@@ -33,6 +62,48 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  // ── semecTeaching 登录 ──────────────────────────────────────────────────
+  Future<void> _semecLogin() async {
+    final username = _semecUserCtrl.text.trim();
+    final password = _semecPassCtrl.text;
+    if (username.isEmpty || password.isEmpty) {
+      setState(() => _semecError = '请输入用户名和密码');
+      return;
+    }
+
+    setState(() { _semecLoggingIn = true; _semecError = null; });
+
+    try {
+      SemecTeachingApi.instance.setBaseUrl(_semecUrlCtrl.text.trim());
+      final result = await SemecTeachingApi.instance.login(username, password);
+
+      if (mounted) {
+        setState(() {
+          _semecLoggingIn = false;
+          if (result.success) {
+            _semecUser = result.user;
+            _semecUserCtrl.clear();
+            _semecPassCtrl.clear();
+          } else {
+            _semecError = result.message ?? '登录失败';
+          }
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _semecLoggingIn = false;
+          _semecError = e.toString();
+        });
+      }
+    }
+  }
+
+  Future<void> _semecLogout() async {
+    await SemecTeachingApi.instance.logout();
+    if (mounted) setState(() => _semecUser = null);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -41,8 +112,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          // ── 服务器地址 ─────────────────────────────────────────────────────
-          const Text('服务器地址', style: AppText.label),
+          // ── OCR 服务器地址 ──────────────────────────────────────────────────
+          const Text('OCR 服务器地址', style: AppText.label),
           const SizedBox(height: 8),
           TextField(
             controller: _urlCtrl,
@@ -108,6 +179,133 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Text(_error!,
                   style: const TextStyle(
                       color: AppColors.red, fontSize: 12, fontFamily: 'monospace')),
+            ),
+          ],
+
+          const SizedBox(height: 32),
+          const Divider(),
+          const SizedBox(height: 16),
+
+          // ── semecTeaching 云端同步 ─────────────────────────────────────────
+          Row(
+            children: [
+              const Text('semecTeaching 云端同步', style: AppText.label),
+              const Spacer(),
+              if (_semecUser != null)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: AppColors.green.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    '已登录: ${_semecUser!.realName.isNotEmpty ? _semecUser!.realName : _semecUser!.username}',
+                    style: const TextStyle(
+                        color: AppColors.green, fontSize: 11, fontWeight: FontWeight.w600),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // 服务器地址
+          TextField(
+            controller: _semecUrlCtrl,
+            style: const TextStyle(
+                color: AppColors.textPrimary, fontFamily: 'monospace', fontSize: 13),
+            decoration: const InputDecoration(
+              hintText: 'http://192.168.x.x:3000',
+              prefixIcon: Icon(Icons.cloud_outlined,
+                  size: 18, color: AppColors.textMuted),
+              labelText: '服务器地址',
+              labelStyle: TextStyle(fontSize: 12),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // 登录表单或已登录信息
+          if (_semecUser == null) ...[
+            TextField(
+              controller: _semecUserCtrl,
+              style: const TextStyle(
+                  color: AppColors.textPrimary, fontSize: 14),
+              decoration: const InputDecoration(
+                hintText: '用户名',
+                prefixIcon: Icon(Icons.person_outline,
+                    size: 18, color: AppColors.textMuted),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _semecPassCtrl,
+              obscureText: true,
+              style: const TextStyle(
+                  color: AppColors.textPrimary, fontSize: 14),
+              decoration: const InputDecoration(
+                hintText: '密码',
+                prefixIcon: Icon(Icons.lock_outline,
+                    size: 18, color: AppColors.textMuted),
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                onPressed: _semecLoggingIn ? null : _semecLogin,
+                icon: _semecLoggingIn
+                    ? const SizedBox(width: 16, height: 16,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: AppColors.bg0))
+                    : const Icon(Icons.login, size: 18),
+                label: Text(_semecLoggingIn ? '登录中…' : '登录'),
+              ),
+            ),
+          ] else ...[
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.bg1,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppColors.bg3),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _infoRow('用户', _semecUser!.username),
+                  _infoRow('姓名', _semecUser!.realName),
+                  _infoRow('角色', _semecUser!.role),
+                  _infoRow('ID', '${_semecUser!.id}'),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _semecLogout,
+                icon: const Icon(Icons.logout, size: 18, color: AppColors.red),
+                label: const Text('退出登录',
+                    style: TextStyle(color: AppColors.red)),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: AppColors.red),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+              ),
+            ),
+          ],
+
+          if (_semecError != null) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.red.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppColors.red.withOpacity(0.3)),
+              ),
+              child: Text(_semecError!,
+                  style: const TextStyle(
+                      color: AppColors.red, fontSize: 12)),
             ),
           ],
 

@@ -4,7 +4,6 @@
 //
 import 'package:flutter/material.dart';
 import '../api/api_client.dart';
-import '../services/sync_service.dart';
 import '../models/wrong_answer_record.dart';
 import '../utils/db_helper.dart';
 import '../utils/theme.dart';
@@ -41,67 +40,30 @@ class _PreviewScreenState extends State<PreviewScreen>
 
   Future<void> _save() async {
     setState(() => _saving = true);
-    String? localError;
-    String? syncError;
-    bool syncSuccess = false;
-
     try {
-      // 1. 同步到本地 OCR 服务端（原有逻辑）
+      // 同步到服务端
       await ApiClient.instance.saveRecord(_record);
-    } catch (e) {
-      // OCR 服务端失败不影响本地保存
-    }
-
-    // 2. 保存到本地 SQLite
-    try {
+      // 保存到本地 SQLite
       await DbHelper.instance.upsert(_record);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('✓ 已保存')));
+        Navigator.pop(context, true);  // 通知 CaptureScreen 已保存
+      }
     } catch (e) {
-      localError = e.toString();
-    }
-
-    // 3. 尝试同步到 semecTeaching 云端
-    if (localError == null && SyncService.instance.isLoggedIn) {
-      try {
-        final syncResult = await SyncService.instance.syncRecord(_record);
-        syncSuccess = syncResult.success;
-        if (!syncResult.success) {
-          syncError = syncResult.error;
-        }
-      } catch (e) {
-        syncError = e.toString();
-      }
-    }
-
-    if (mounted) {
-      setState(() => _saving = false);
-
-      if (localError != null) {
+      // 服务端失败时仍尝试本地保存
+      try { await DbHelper.instance.upsert(_record); } catch (_) {}
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('本地保存失败: $localError'),
-            backgroundColor: AppColors.red,
+            content: Text('服务端同步失败，已本地保存: $e'),
+            backgroundColor: AppColors.amber,
           ),
         );
-      } else {
-        String msg = '✓ 已保存';
-        Color bg = AppColors.bg2;
-        if (SyncService.instance.isLoggedIn) {
-          if (syncSuccess) {
-            msg = '✓ 已保存并同步到云端';
-            bg = AppColors.green.withOpacity(0.8);
-          } else if (syncError != null) {
-            msg = '已本地保存，云端同步失败: $syncError';
-            bg = AppColors.amber;
-          }
-        }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(msg),
-            backgroundColor: bg,
-          ),
-        );
-        Navigator.pop(context, true); // 通知 CaptureScreen 已保存
+        Navigator.pop(context, true);
       }
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
   }
 

@@ -19,6 +19,7 @@ from app.models.schema import (
     UploadResponse, ExtractResponse,
 )
 from app.core import mineru_client, qwen_client, asset_extractor
+from app.core.preprocess import preprocess_image
 
 logger = logging.getLogger(__name__)
 
@@ -30,19 +31,17 @@ async def run_upload(
     image_source: str = "camera",
 ) -> UploadResponse:
     """
-    Stage1：原图 MinerU 全页解析。
+    Stage1：预处理 + MinerU 全页解析。
     返回 content_blocks 预览供 Flutter 绘制 ROI 覆盖层。
-    注意：统一使用原图解析，保证前端 ROI 坐标与 blocks 坐标系一致。
     """
     t0 = time.perf_counter()
 
-    # 直接使用原图解析（不经过预处理），保证坐标系一致
-    blocks, min_conf = await mineru_client.parse_image(original_path)
+    # 预处理
+    processed_path = original_path.parent / f"proc_{original_path.name}"
+    _, width, height = preprocess_image(original_path, processed_path, image_source)
 
-    # 获取原图尺寸
-    import cv2
-    img = cv2.imread(str(original_path))
-    height, width = img.shape[:2]
+    # MinerU 解析
+    blocks, min_conf = await mineru_client.parse_image(processed_path)
 
     elapsed = int((time.perf_counter() - t0) * 1000)
     logger.info(f"run_upload 完成: {elapsed}ms, {len(blocks)} blocks, conf={min_conf:.3f}")
@@ -89,18 +88,14 @@ async def run_extract(
     original_path = _find_original(originals_dir, image_id)
     blocks = _load_cached_blocks(originals_dir, image_id)
 
-    # 若缓存 miss，重新解析 - 使用原图做OCR，保证坐标一致
+    # 若缓存 miss，重新解析（降级）
     if not blocks:
         logger.warning(f"blocks 缓存未命中，重新解析: {image_id}")
-        blocks, _ = await mineru_client.parse_image(original_path)
-    # 在 run_extract 中，调用 filter_blocks_by_roi 之前
-    logger.info(f"前端 ROI (原图)   : {roi_bbox}")
-    # logger.info(f"原图尺寸          : {original_size}")
-    # logger.info(f"MinerU 推算尺寸   : {mineru_size}")
-    # logger.info(f"映射后 ROI        : {mapped_roi}")
-    logger.info(f"所有 blocks 的 bbox 示例：")
-    for b in blocks[:20]:
-        logger.info(f"  {b.id} {b.type} {b.bbox}")
+        processed_path = original_path.parent / f"proc_{original_path.name}"
+        if not processed_path.exists():
+            preprocess_image(original_path, processed_path, image_source)
+        blocks, _ = await mineru_client.parse_image(processed_path)
+
     # ── ROI 筛选 ──────────────────────────────────────────────────────────
     filtered = mineru_client.filter_blocks_by_roi(blocks, roi_bbox)
     ocr_text = mineru_client.blocks_to_text(filtered)
