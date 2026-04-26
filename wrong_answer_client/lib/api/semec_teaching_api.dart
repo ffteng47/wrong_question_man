@@ -430,7 +430,7 @@ class SemecTeachingApi {
   /// 复用 POST /classes/class-tree，教师角色自动过滤自己班级
   Future<List<Map<String, dynamic>>> getClassTree() async {
     try {
-      final resp = await _dio.post('/classes/class-tree');
+      final resp = await _dio.post('/api/classes/class-tree');
       if (resp.statusCode == 200 && resp.data?['code'] == 0) {
         return List<Map<String, dynamic>>.from(resp.data!['data'] ?? []);
       }
