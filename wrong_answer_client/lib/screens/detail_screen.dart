@@ -8,6 +8,7 @@ import '../services/sync_service.dart';
 import '../utils/db_helper.dart';
 import '../utils/theme.dart';
 import '../widgets/math_markdown.dart';
+import 'assign_student_screen.dart';
 
 class DetailScreen extends StatefulWidget {
   final WrongAnswerRecord record;
@@ -23,6 +24,7 @@ class _DetailScreenState extends State<DetailScreen>
   late TabController _tabs;
   bool _showAnswer = false;
   bool _syncing = false;
+  bool _saving = false;
 
   @override
   void initState() {
@@ -90,6 +92,61 @@ class _DetailScreenState extends State<DetailScreen>
     }
   }
 
+  Future<void> _assignToStudent() async {
+    final result = await Navigator.push<AssignResult>(context,
+      MaterialPageRoute(builder: (_) => const AssignStudentScreen()));
+    if (result == null) return;
+
+    setState(() => _saving = true);
+    try {
+      final syncResult = await SyncService.instance.assignToStudent(
+        record: _record,
+        targetUserId: result.studentId,
+        keepLocal: result.keepLocal,
+      );
+
+      if (syncResult.success) {
+        _record.assignedToStudentId = result.studentId.toString();
+        _record.assignedToStudentName = result.studentName;
+        _record.assignStatus = 'assigned';
+        if (!result.keepLocal) {
+          await DbHelper.instance.delete(_record.id);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('✓ 已分配给学生')));
+            Navigator.pop(context); // 返回首页
+          }
+        } else {
+          await DbHelper.instance.upsert(_record);
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('✓ 已分配并保留到本地')));
+          }
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('分配失败: ${syncResult.error}'),
+              backgroundColor: AppColors.amber,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('分配异常: $e'),
+            backgroundColor: AppColors.amber,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -106,12 +163,28 @@ class _DetailScreenState extends State<DetailScreen>
                     strokeWidth: 2, color: AppColors.amber),
               ),
             )
-          else
+          else if (SyncService.instance.isLoggedIn)
             IconButton(
               icon: const Icon(Icons.cloud_upload_outlined,
                   color: AppColors.textSecondary),
               tooltip: '同步到 semecTeaching',
               onPressed: _syncToSemec,
+            ),
+          if (_saving)
+            const Padding(
+              padding: EdgeInsets.all(14),
+              child: SizedBox(
+                width: 20, height: 20,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: AppColors.green),
+              ),
+            )
+          else if (SyncService.instance.currentUser?.role == 'teacher')
+            IconButton(
+              icon: const Icon(Icons.person_add_outlined,
+                  color: AppColors.textSecondary),
+              tooltip: '分配给学生',
+              onPressed: _assignToStudent,
             ),
         ],
         bottom: TabBar(

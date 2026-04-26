@@ -135,6 +135,12 @@ class WrongAnswerRecord {
   String reviewStatus;
   List<String> tags;
 
+  // 教师分配相关字段
+  String? assignedToStudentId;
+  String? assignedToStudentName;
+  bool keepInTeacherCollection;
+  String? assignStatus;
+
   WrongAnswerRecord({
     required this.id,
     required this.createdAt,
@@ -158,6 +164,10 @@ class WrongAnswerRecord {
     ErrorAnalysis? errorAnalysis,
     this.reviewStatus = 'pending',
     this.tags = const [],
+    this.assignedToStudentId,
+    this.assignedToStudentName,
+    this.keepInTeacherCollection = true,
+    this.assignStatus,
   }) : errorAnalysis = errorAnalysis ?? ErrorAnalysis();
 
   factory WrongAnswerRecord.fromJson(Map<String, dynamic> j) => WrongAnswerRecord(
@@ -184,6 +194,10 @@ class WrongAnswerRecord {
     errorAnalysis: ErrorAnalysis.fromJson(j['error_analysis'] ?? {}),
     reviewStatus: j['review_status'] ?? 'pending',
     tags: List<String>.from(j['tags'] ?? []),
+    assignedToStudentId: j['assigned_to_student_id'],
+    assignedToStudentName: j['assigned_to_student_name'],
+    keepInTeacherCollection: j['keep_in_teacher_collection'] ?? true,
+    assignStatus: j['assign_status'],
   );
 
   Map<String, dynamic> toJson() => {
@@ -209,6 +223,10 @@ class WrongAnswerRecord {
     'error_analysis': errorAnalysis.toJson(),
     'review_status': reviewStatus,
     'tags': tags,
+    'assigned_to_student_id': assignedToStudentId,
+    'assigned_to_student_name': assignedToStudentName,
+    'keep_in_teacher_collection': keepInTeacherCollection,
+    'assign_status': assignStatus,
   };
 
   String toJsonString() => jsonEncode(toJson());

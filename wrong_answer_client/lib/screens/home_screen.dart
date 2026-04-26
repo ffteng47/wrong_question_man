@@ -1,11 +1,13 @@
 // lib/screens/home_screen.dart
 import 'package:flutter/material.dart';
 import '../models/wrong_answer_record.dart';
+import '../services/sync_service.dart';
 import '../utils/db_helper.dart';
 import '../utils/draft_helper.dart';
 import '../utils/theme.dart';
 import '../widgets/draft_banner.dart';
 import '../widgets/record_card.dart';
+import 'assign_student_screen.dart';
 import 'capture_screen.dart';
 import 'detail_screen.dart';
 import 'settings_screen.dart';
@@ -28,6 +30,9 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _filterGrade;
   String? _filterStatus;
 
+  // 教师多选分配
+  final Set<String> _selectedRecordIds = {};
+
   @override
   void initState() {
     super.initState();
@@ -36,10 +41,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _load() async {
     setState(() => _loading = true);
+    final isTeacher = SyncService.instance.currentUser?.role == 'teacher';
     final records = await DbHelper.instance.query(
       subject: _filterSubject,
       grade: _filterGrade,
       reviewStatus: _filterStatus,
+      // 教师视图：过滤掉已分配且不保留的
+      keepInTeacherCollection: isTeacher ? true : null,
     );
     final stats = await DbHelper.instance.stats();
     final drafts = await DraftHelper.instance.pendingTasks();
@@ -104,16 +112,34 @@ class _HomeScreenState extends State<HomeScreen> {
             else
               SliverList(
                 delegate: SliverChildBuilderDelegate(
-                  (ctx, i) => RecordCard(
-                    record: _records[i],
-                    onTap: () async {
-                      await Navigator.push(ctx,
-                          MaterialPageRoute(builder: (_) =>
-                              DetailScreen(record: _records[i])));
-                      _load();
-                    },
-                    onDelete: () => _confirmDelete(_records[i]),
-                  ),
+                  (ctx, i) {
+                    final isTeacher = SyncService.instance.currentUser?.role == 'teacher';
+                    final record = _records[i];
+                    final isSelected = _selectedRecordIds.contains(record.id);
+                    return RecordCard(
+                      record: record,
+                      isSelectable: isTeacher,
+                      isSelected: isSelected,
+                      onSelectChanged: isTeacher
+                          ? (selected) {
+                              setState(() {
+                                if (selected) {
+                                  _selectedRecordIds.add(record.id);
+                                } else {
+                                  _selectedRecordIds.remove(record.id);
+                                }
+                              });
+                            }
+                          : null,
+                      onTap: () async {
+                        await Navigator.push(ctx,
+                            MaterialPageRoute(builder: (_) =>
+                                DetailScreen(record: record)));
+                        _load();
+                      },
+                      onDelete: () => _confirmDelete(record),
+                    );
+                  },
                   childCount: _records.length,
                 ),
               ),
@@ -121,18 +147,85 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () async {
-          final added = await Navigator.push<bool>(context,
-              MaterialPageRoute(builder: (_) => const CaptureScreen()));
-          if (added == true) _load();
-        },
-        backgroundColor: AppColors.amber,
-        foregroundColor: AppColors.bg0,
-        icon: const Icon(Icons.add),
-        label: const Text('添加错题', style: TextStyle(fontWeight: FontWeight.w600)),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // 教师批量分配按钮
+          if (SyncService.instance.currentUser?.role == 'teacher' &&
+              _selectedRecordIds.isNotEmpty)
+            FloatingActionButton.extended(
+              heroTag: 'assign',
+              onPressed: _assignSelected,
+              backgroundColor: AppColors.green,
+              foregroundColor: AppColors.bg0,
+              icon: const Icon(Icons.person_add),
+              label: Text('分配 ${_selectedRecordIds.length} 题',
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+            ),
+          const SizedBox(height: 12),
+          FloatingActionButton.extended(
+            heroTag: 'add',
+            onPressed: () async {
+              final added = await Navigator.push<bool>(context,
+                  MaterialPageRoute(builder: (_) => const CaptureScreen()));
+              if (added == true) _load();
+            },
+            backgroundColor: AppColors.amber,
+            foregroundColor: AppColors.bg0,
+            icon: const Icon(Icons.add),
+            label: const Text('添加错题', style: TextStyle(fontWeight: FontWeight.w600)),
+          ),
+        ],
       ),
     );
+  }
+
+  // ── 教师批量分配 ───────────────────────────────────────────────────────────
+  Future<void> _assignSelected() async {
+    if (_selectedRecordIds.isEmpty) return;
+    final result = await Navigator.push<AssignResult>(context,
+      MaterialPageRoute(builder: (_) => const AssignStudentScreen()));
+    if (result == null) return;
+
+    int successCount = 0;
+    int failCount = 0;
+
+    for (final recordId in _selectedRecordIds.toList()) {
+      final record = _records.firstWhere((r) => r.id == recordId);
+      try {
+        final syncResult = await SyncService.instance.assignToStudent(
+          record: record,
+          targetUserId: result.studentId,
+          keepLocal: result.keepLocal,
+        );
+        if (syncResult.success) {
+          successCount++;
+          if (!result.keepLocal) {
+            await DbHelper.instance.delete(record.id);
+          } else {
+            record.assignedToStudentId = result.studentId.toString();
+            record.assignStatus = 'assigned';
+            await DbHelper.instance.upsert(record);
+          }
+        } else {
+          failCount++;
+        }
+      } catch (e) {
+        failCount++;
+      }
+    }
+
+    setState(() => _selectedRecordIds.clear());
+    await _load();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('分配完成：成功 $successCount，失败 $failCount'),
+          backgroundColor: failCount == 0 ? AppColors.green : AppColors.amber,
+        ),
+      );
+    }
   }
 
   // ── 继续草稿 ──────────────────────────────────────────────────────────────

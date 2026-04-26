@@ -8,26 +8,50 @@ class RecordCard extends StatelessWidget {
   final WrongAnswerRecord record;
   final VoidCallback? onTap;
   final VoidCallback? onDelete;
+  final bool isSelectable;
+  final bool isSelected;
+  final ValueChanged<bool>? onSelectChanged;
 
   const RecordCard({
     super.key,
     required this.record,
     this.onTap,
     this.onDelete,
+    this.isSelectable = false,
+    this.isSelected = false,
+    this.onSelectChanged,
   });
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: onTap,
+      onTap: isSelectable && onSelectChanged != null
+          ? () => onSelectChanged!(!isSelected)
+          : onTap,
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         decoration: BoxDecoration(
-          color: AppColors.bg1,
+          color: isSelected ? AppColors.bg1.withOpacity(0.8) : AppColors.bg1,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppColors.bg3),
+          border: Border.all(
+            color: isSelected ? AppColors.amber : AppColors.bg3,
+            width: isSelected ? 2 : 1,
+          ),
         ),
-        child: Column(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (isSelectable)
+              Padding(
+                padding: const EdgeInsets.only(left: 8, top: 12),
+                child: Checkbox(
+                  value: isSelected,
+                  onChanged: (v) => onSelectChanged?.call(v ?? false),
+                  activeColor: AppColors.amber,
+                ),
+              ),
+            Expanded(
+              child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // ── 顶部元数据栏 ───────────────────────────────────────────────
@@ -89,6 +113,24 @@ class RecordCard extends StatelessWidget {
                     _formatDate(record.createdAt),
                     style: AppText.mono.copyWith(fontSize: 11),
                   ),
+                  if (record.assignedToStudentName != null) ...[
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: AppColors.green.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        '已分配给 ${record.assignedToStudentName}',
+                        style: TextStyle(
+                          color: AppColors.green,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
                   const Spacer(),
                   if (onDelete != null)
                     IconButton(
@@ -106,7 +148,10 @@ class RecordCard extends StatelessWidget {
           ],
         ),
       ),
-    );
+    ],
+  ),
+),
+);
   }
 
   String _formatDate(String iso) {

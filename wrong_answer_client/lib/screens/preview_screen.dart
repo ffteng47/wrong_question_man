@@ -9,6 +9,7 @@ import '../models/wrong_answer_record.dart';
 import '../utils/db_helper.dart';
 import '../utils/theme.dart';
 import '../widgets/math_markdown.dart';
+import 'assign_student_screen.dart';
 
 class PreviewScreen extends StatefulWidget {
   final WrongAnswerRecord record;
@@ -40,57 +41,62 @@ class _PreviewScreenState extends State<PreviewScreen>
   }
 
   Future<void> _save() async {
+    final user = SyncService.instance.currentUser;
+    final isTeacher = user?.role == 'teacher';
+    int? targetUserId;
+    bool keepLocal = true;
+
+    // 教师角色：先选择目标学生
+    if (isTeacher) {
+      final result = await Navigator.push<AssignResult>(context,
+        MaterialPageRoute(builder: (_) => const AssignStudentScreen()));
+      if (result == null) return; // 用户取消
+      targetUserId = result.studentId;
+      keepLocal = result.keepLocal;
+      _record.assignedToStudentId = targetUserId.toString();
+      _record.assignedToStudentName = result.studentName;
+      _record.keepInTeacherCollection = keepLocal;
+    }
+
     setState(() => _saving = true);
-    String? localError;
-    String? syncError;
-    bool syncSuccess = false;
+    SyncResult? syncResult;
 
     try {
-      // 1. 同步到本地 OCR 服务端（原有逻辑）
+      // 同步到 OCR 服务端
       await ApiClient.instance.saveRecord(_record);
-    } catch (e) {
-      // OCR 服务端失败不影响本地保存
-    }
 
-    // 2. 保存到本地 SQLite
-    try {
-      await DbHelper.instance.upsert(_record);
-    } catch (e) {
-      localError = e.toString();
-    }
-
-    // 3. 尝试同步到 semecTeaching 云端
-    if (localError == null && SyncService.instance.isLoggedIn) {
-      try {
-        final syncResult = await SyncService.instance.syncRecord(_record);
-        syncSuccess = syncResult.success;
-        if (!syncResult.success) {
-          syncError = syncResult.error;
-        }
-      } catch (e) {
-        syncError = e.toString();
+      // 学生 / 教师保留本地：保存到 SQLite
+      if (!isTeacher || keepLocal) {
+        await DbHelper.instance.upsert(_record);
       }
-    }
 
-    if (mounted) {
-      setState(() => _saving = false);
+      // 已登录 semecTeaching：同步/分配
+      if (SyncService.instance.isLoggedIn) {
+        if (isTeacher && targetUserId != null) {
+          syncResult = await SyncService.instance.assignToStudent(
+            record: _record,
+            targetUserId: targetUserId,
+            keepLocal: keepLocal,
+          );
+        } else {
+          syncResult = await SyncService.instance.syncRecord(_record);
+        }
+      }
 
-      if (localError != null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('本地保存失败: $localError'),
-            backgroundColor: AppColors.red,
-          ),
-        );
-      } else {
+      if (mounted) {
+        // 教师不保留本地且同步成功：删除本地记录
+        if (isTeacher && !keepLocal && syncResult != null && syncResult.success) {
+          await DbHelper.instance.delete(_record.id);
+        }
+
         String msg = '✓ 已保存';
         Color bg = AppColors.bg2;
-        if (SyncService.instance.isLoggedIn) {
-          if (syncSuccess) {
-            msg = '✓ 已保存并同步到云端';
+        if (syncResult != null) {
+          if (syncResult.success) {
+            msg = isTeacher ? '✓ 已分配给学生' : '✓ 已保存并同步到云端';
             bg = AppColors.green.withOpacity(0.8);
-          } else if (syncError != null) {
-            msg = '已本地保存，云端同步失败: $syncError';
+          } else {
+            msg = '已本地保存，同步失败: ${syncResult.error}';
             bg = AppColors.amber;
           }
         }
@@ -100,8 +106,24 @@ class _PreviewScreenState extends State<PreviewScreen>
             backgroundColor: bg,
           ),
         );
-        Navigator.pop(context, true); // 通知 CaptureScreen 已保存
+        Navigator.pop(context, true);
       }
+    } catch (e) {
+      // 异常时仍尝试本地保存（学生/教师保留模式）
+      if (!isTeacher || keepLocal) {
+        try { await DbHelper.instance.upsert(_record); } catch (_) {}
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('保存异常: $e'),
+            backgroundColor: AppColors.red,
+          ),
+        );
+        Navigator.pop(context, true);
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
   }
 

@@ -17,7 +17,7 @@ class DbHelper {
     final dbPath = join(await getDatabasesPath(), 'wrong_answer.db');
     return openDatabase(
       dbPath,
-      version: 2,
+      version: 3,
       onCreate: (db, version) async {
         await _createRecordsTable(db);
         await _createDraftTable(db);
@@ -25,6 +25,12 @@ class DbHelper {
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
           await _createDraftTable(db);
+        }
+        if (oldVersion < 3) {
+          await db.execute('ALTER TABLE records ADD COLUMN assigned_to_student_id TEXT');
+          await db.execute('ALTER TABLE records ADD COLUMN assigned_to_student_name TEXT');
+          await db.execute('ALTER TABLE records ADD COLUMN keep_in_teacher_collection INTEGER DEFAULT 1');
+          await db.execute('ALTER TABLE records ADD COLUMN assign_status TEXT');
         }
       },
     );
@@ -42,6 +48,10 @@ class DbHelper {
         created_at  TEXT NOT NULL,
         updated_at  TEXT NOT NULL,
         tags_json   TEXT NOT NULL DEFAULT '[]',
+        assigned_to_student_id TEXT,
+        assigned_to_student_name TEXT,
+        keep_in_teacher_collection INTEGER DEFAULT 1,
+        assign_status TEXT,
         data_json   TEXT NOT NULL
       )
     ''');
@@ -53,6 +63,8 @@ class DbHelper {
       'CREATE INDEX IF NOT EXISTS idx_review ON records(review_status)');
     await db.execute(
       'CREATE INDEX IF NOT EXISTS idx_created ON records(created_at DESC)');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_assign_status ON records(assign_status)');
   }
 
   Future<void> _createDraftTable(Database db) async {
@@ -88,6 +100,10 @@ class DbHelper {
         'created_at':    r.createdAt,
         'updated_at':    r.updatedAt,
         'tags_json':     jsonEncode(r.tags),
+        'assigned_to_student_id': r.assignedToStudentId,
+        'assigned_to_student_name': r.assignedToStudentName,
+        'keep_in_teacher_collection': r.keepInTeacherCollection ? 1 : 0,
+        'assign_status': r.assignStatus,
         'data_json':     r.toJsonString(),
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
@@ -99,18 +115,28 @@ class DbHelper {
     String? subject,
     String? grade,
     String? reviewStatus,
+    String? assignStatus,
+    bool? keepInTeacherCollection,
     int limit = 50,
     int offset = 0,
   }) async {
     final d = await db;
     final conditions = <String>[];
-    final args = <Object>[];
+    final args = <Object?>[];
 
     if (subject != null) { conditions.add('subject = ?'); args.add(subject); }
     if (grade != null)   { conditions.add('grade = ?');   args.add(grade); }
     if (reviewStatus != null) {
       conditions.add('review_status = ?');
       args.add(reviewStatus);
+    }
+    if (assignStatus != null) {
+      conditions.add('(assign_status = ? OR assign_status IS NULL)');
+      args.add(assignStatus);
+    }
+    if (keepInTeacherCollection != null) {
+      conditions.add('(keep_in_teacher_collection = ? OR keep_in_teacher_collection IS NULL)');
+      args.add(keepInTeacherCollection ? 1 : 0);
     }
 
     final where = conditions.isEmpty ? null : conditions.join(' AND ');
