@@ -93,7 +93,15 @@ class _PreviewScreenState extends State<PreviewScreen>
         Color bg = AppColors.bg2;
         if (syncResult != null) {
           if (syncResult.success) {
-            msg = isTeacher ? '✓ 已分配给学生' : '✓ 已保存并同步到云端';
+            if (isTeacher) {
+              if (syncResult.teacherSaved && syncResult.studentSaved) {
+                msg = '✓ 已分配给学生并保存到教师错题本';
+              } else if (syncResult.studentSaved) {
+                msg = '✓ 已分配给学生（教师错题库保存失败）';
+              }
+            } else {
+              msg = '✓ 已保存并同步到云端';
+            }
             bg = AppColors.green.withOpacity(0.8);
           } else {
             msg = '已本地保存，同步失败: ${syncResult.error}';

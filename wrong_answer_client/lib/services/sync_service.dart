@@ -9,13 +9,21 @@ import '../utils/db_helper.dart';
 /// 同步结果
 class SyncResult {
   final bool success;
+  final bool studentSaved;
+  final bool teacherSaved;
   final int? incorrectId;
+  final String? studentIncorrectId;
+  final String? teacherIncorrectId;
   final String? error;
   final bool uploadedImages;
 
   SyncResult({
     required this.success,
+    this.studentSaved = false,
+    this.teacherSaved = false,
     this.incorrectId,
+    this.studentIncorrectId,
+    this.teacherIncorrectId,
     this.error,
     this.uploadedImages = false,
   });
@@ -98,6 +106,8 @@ class SyncService {
     if (saveResult.success) {
       return SyncResult(
         success: true,
+        studentSaved: true,
+        teacherSaved: true,
         incorrectId: saveResult.incorrectId,
         uploadedImages: uploadedAny,
       );
@@ -157,8 +167,8 @@ class SyncService {
       if (imageUrls.isEmpty) imageUrls = null;
     }
 
-    // 3. 调用 semecTeaching API，user_id = targetUserId（教师代学生保存）
-    final saveResult = await _api.saveIncorrectQuestion(
+    // 3. 保存到学生库（主流程）
+    final studentResult = await _api.saveIncorrectQuestion(
       userId: targetUserId,
       subject: record.subject,
       problem: record.problem,
@@ -181,25 +191,60 @@ class SyncService {
       realScore: record.realScore,
     );
 
-    // 4. 如保留到本地，使用 upsert 更新记录
-    if (keepLocal && saveResult.success) {
+    // 4. 如保留到教师错题本，非阻塞保存到教师自己的云端
+    bool teacherSaved = false;
+    String? teacherError;
+    int? teacherIncorrectId;
+
+    if (keepLocal && studentResult.success) {
+      try {
+        final teacherUser = _api.currentUser!;
+        final tResult = await _api.saveIncorrectQuestion(
+          userId: teacherUser.id,
+          subject: record.subject,
+          problem: record.problem,
+          grade: record.grade,
+          knowledgePoints: record.knowledgePoints.isNotEmpty
+              ? record.knowledgePoints : null,
+          answer: record.answer.isNotEmpty ? record.answer : null,
+          solution: record.solution.isNotEmpty ? record.solution : null,
+          studentAnswer: record.errorAnalysis.studentAnswer.isNotEmpty
+              ? record.errorAnalysis.studentAnswer : null,
+          errorCategory: record.errorAnalysis.errorCategory != '未知'
+              ? record.errorAnalysis.errorCategory : null,
+          errorDesc: record.errorAnalysis.errorDesc.isNotEmpty
+              ? record.errorAnalysis.errorDesc : null,
+          images: imageUrls,
+          difficulty: record.difficulty,
+          realScore: record.realScore,
+        );
+        teacherSaved = tResult.success;
+        teacherIncorrectId = tResult.incorrectId;
+        if (!tResult.success) teacherError = tResult.error;
+      } catch (e) {
+        teacherError = '教师错题库保存失败: $e';
+      }
+    }
+
+    // 5. 本地 SQLite 更新
+    if (keepLocal && studentResult.success) {
       record.assignedToStudentId = targetUserId.toString();
       record.assignStatus = 'assigned';
       await DbHelper.instance.upsert(record);
     }
 
-    if (saveResult.success) {
-      return SyncResult(
-        success: true,
-        incorrectId: saveResult.incorrectId,
-        uploadedImages: uploadedAny,
-      );
-    } else {
-      return SyncResult(
-        success: false,
-        error: saveResult.error ?? '分配失败',
-        uploadedImages: uploadedAny,
-      );
-    }
+    return SyncResult(
+      success: studentResult.success,
+      studentSaved: studentResult.success,
+      teacherSaved: teacherSaved,
+      incorrectId: studentResult.incorrectId,
+      studentIncorrectId: studentResult.success
+          ? studentResult.incorrectId?.toString() : null,
+      teacherIncorrectId: teacherIncorrectId?.toString(),
+      error: !studentResult.success
+          ? studentResult.error ?? '分配失败'
+          : teacherError,
+      uploadedImages: uploadedAny,
+    );
   }
 }

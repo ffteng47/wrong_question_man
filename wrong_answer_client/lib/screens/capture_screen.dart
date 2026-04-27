@@ -5,6 +5,7 @@
 //
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import 'package:uuid/uuid.dart';
 import '../api/api_client.dart';
@@ -77,6 +78,26 @@ class _CaptureScreenState extends State<CaptureScreen> {
     );
     if (xFile == null) return;
 
+    // EXIF 方向校正（仅 JPEG/HEIC，PNG 不支持 EXIF Orientation）
+    final originalFile = File(xFile.path);
+    final ext = xFile.path.toLowerCase();
+    if (ext.endsWith('.jpg') || ext.endsWith('.jpeg') || ext.endsWith('.heic')) {
+      try {
+        final bytes = await originalFile.readAsBytes();
+        final originalImage = img.decodeImage(bytes);
+        if (originalImage != null) {
+          final orientedImage = img.bakeOrientation(originalImage);
+          if (orientedImage != originalImage) {
+            await originalFile.writeAsBytes(
+              img.encodeJpg(orientedImage, quality: 95),
+            );
+          }
+        }
+      } catch (e) {
+        print('EXIF 校正失败: $e');
+      }
+    }
+
     // 若之前有遗留草稿（如图片被清理后重新选图），先删除旧草稿
     if (_currentDraftId != null) {
       await DraftHelper.instance.delete(_currentDraftId!);
@@ -84,7 +105,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
     }
 
     setState(() {
-      _imageFile = File(xFile.path);
+      _imageFile = originalFile;
       _uploadResp = null;
       _stage = _Stage.idle;
     });

@@ -105,6 +105,12 @@ class _AssignStudentScreenState extends State<AssignStudentScreen> {
     return students;
   }
 
+  /// 从班级名称中提取年级信息
+  String _extractGrade(String className) {
+    final match = RegExp(r'^[一二三四五六七八九十]+年级').firstMatch(className);
+    return match?.group(0) ?? '其他';
+  }
+
   /// 内存搜索（按姓名/班级名过滤）
   void _onSearch() {
     final query = _searchCtrl.text.trim().toLowerCase();
@@ -245,48 +251,55 @@ class _AssignStudentScreenState extends State<AssignStudentScreen> {
       );
     }
 
-    // 按班级分组显示
-    final grouped = <String, List<_StudentInfo>>{};
+    // 按年级 → 班级 → 学生三级分组
+    final grouped = <String, Map<String, List<_StudentInfo>>>{};
     for (final s in _filteredStudents) {
-      grouped.putIfAbsent(s.className, () => []).add(s);
+      final grade = _extractGrade(s.className);
+      grouped.putIfAbsent(grade, () => {});
+      grouped[grade]!.putIfAbsent(s.className, () => []).add(s);
     }
 
     return ListView.builder(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       itemCount: grouped.length,
-      itemBuilder: (ctx, groupIndex) {
-        final className = grouped.keys.elementAt(groupIndex);
-        final students = grouped[className]!;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 班级标题
-            Padding(
-              padding: const EdgeInsets.only(top: 12, bottom: 4),
-              child: Text(
-                className,
-                style: AppText.label.copyWith(color: AppColors.amber),
-              ),
-            ),
-            // 学生列表
-            ...students.map((s) => CheckboxListTile(
-              value: _selectedStudentIds.contains(s.id),
-              onChanged: (checked) {
-                setState(() {
-                  if (checked == true) {
-                    _selectedStudentIds.add(s.id);
-                  } else {
-                    _selectedStudentIds.remove(s.id);
-                  }
-                });
-              },
-              title: Text(s.name),
-              dense: true,
-              activeColor: AppColors.amber,
-              controlAffinity: ListTileControlAffinity.leading,
-            )),
-            const Divider(height: 1),
-          ],
+      itemBuilder: (ctx, gradeIndex) {
+        final grade = grouped.keys.elementAt(gradeIndex);
+        final classes = grouped[grade]!;
+        return ExpansionTile(
+          initiallyExpanded: gradeIndex == 0,
+          title: Text(grade, style: AppText.label.copyWith(color: AppColors.amber)),
+          children: classes.entries.map((entry) {
+            final className = entry.key;
+            final students = entry.value;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(left: 16, top: 8, bottom: 4),
+                  child: Text(className, style: const TextStyle(
+                    color: AppColors.textSecondary, fontSize: 13)),
+                ),
+                ...students.map((s) => CheckboxListTile(
+                  contentPadding: const EdgeInsets.only(left: 32),
+                  value: _selectedStudentIds.contains(s.id),
+                  onChanged: (checked) {
+                    setState(() {
+                      if (checked == true) {
+                        _selectedStudentIds.add(s.id);
+                      } else {
+                        _selectedStudentIds.remove(s.id);
+                      }
+                    });
+                  },
+                  title: Text(s.name),
+                  dense: true,
+                  activeColor: AppColors.amber,
+                  controlAffinity: ListTileControlAffinity.leading,
+                )),
+                const Divider(height: 1, indent: 16),
+              ],
+            );
+          }).toList(),
         );
       },
     );
