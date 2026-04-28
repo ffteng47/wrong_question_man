@@ -17,7 +17,7 @@ Qwen2.5-VL-7B-Instruct-AWQ 客户端（本地 transformers 推理）
             4. pipeline.py 侧：problem 字段追加 options 内容供前端显示
 """
 from __future__ import annotations
-import base64
+from PIL import Image
 import json
 import logging
 import re
@@ -225,11 +225,8 @@ async def ocr_image(image_path: Path) -> str:
     """
     model, processor = _load_model()
 
-    with open(image_path, "rb") as f:
-        image_data = base64.b64encode(f.read()).decode("utf-8")
-
-    ext = image_path.suffix.lower().lstrip(".")
-    media_type = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
+    # 加载图片为 PIL Image 对象
+    image = Image.open(image_path)
 
     messages = [
         {"role": "system", "content": _OCR_SYSTEM_PROMPT},
@@ -238,7 +235,7 @@ async def ocr_image(image_path: Path) -> str:
             "content": [
                 {
                     "type": "image",
-                    "image": f"data:{media_type};base64,{image_data}",
+                    "image": image,
                 },
                 {
                     "type": "text",
@@ -248,10 +245,14 @@ async def ocr_image(image_path: Path) -> str:
         },
     ]
 
-    text = processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-    inputs = processor(text=[text], return_tensors="pt").to(model.device)
+    # 一步生成 inputs：提取图片 + 图像预处理 + tokenization + 返回可直接传给 model.generate() 的字典
+    inputs = processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+    ).to(model.device)
 
     if settings.debug:
         logger.debug(f"[Qwen Vision OCR] 图片: {image_path.name}, 大小: {image_path.stat().st_size} bytes")
