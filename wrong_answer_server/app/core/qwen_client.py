@@ -3,12 +3,26 @@ Qwen2.5-VL-7B-Instruct-AWQ 客户端（本地 transformers 推理）
 - 直接加载 AWQ 模型进行本地推理
 - 使用 prompt 约束 + 后处理提取 JSON，替代 vLLM guided_json
 - 输入：OCR 文本；输出：WrongAnswerRecord 的语义字段
+
+修改记录：
+  v1.1 - 新增 ocr_image()：直接用 Qwen Vision 识别图片中的题目文本，
+          供 pipeline.py 的 Vision fallback 调用。
+  v1.2 - 修复选择题选项丢失问题：
+          原因：_SYSTEM_PROMPT 要求"过滤学生答案"，Qwen 误将 A/B/C/D 选项
+          判定为学生作答内容而过滤掉，仅保留题干。
+          修复：
+            1. schema 新增 options 字段（字符串数组）
+            2. prompt 明确说明选项是题目结构的一部分，不是学生答案
+            3. 要求 Qwen 识别题型并填入 type 字段
+            4. pipeline.py 侧：problem 字段追加 options 内容供前端显示
 """
 from __future__ import annotations
+import base64
 import json
 import logging
 import re
 import torch
+from pathlib import Path
 from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
 from app.config import settings
 
@@ -37,16 +51,29 @@ def _load_model():
     return _model, _processor
 
 
-# ── Qwen 输出的 JSON Schema（仅提取题目）────────────────────────────────────
+# ── Schema ───────────────────────────────────────────────────────────────────
+
 SEMANTIC_SCHEMA = {
     "type": "object",
-    "required": ["problem"],
+    "required": ["problem", "type"],
     "properties": {
+        "type": {
+            "type": "string",
+            "description": "题目类型，必须是以下之一：选择题、填空题、解答题、判断题、计算题、证明题、作图题、阅读理解、完形填空、其他"
+        },
         "problem": {
             "type": "string",
-            "description": "仅提取完整的题目原文（题干），保留 LaTeX 公式 $...$ 格式。自动过滤学生答题痕迹。"
+            "description": "完整的题目题干（不含选项）。保留 LaTeX 公式 $...$ 格式，过滤学生手写答题痕迹。"
         },
-        "type": {"type": "string"},
+        "options": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "【仅选择题填写，其他题型留空数组】"
+                "选择题的所有选项，每个元素是一个完整选项字符串，含选项标号，例如：'A. $a > 0$'。"
+                "选项是题目的固有组成部分，不是学生答案，必须完整提取。"
+            )
+        },
         "seq": {"type": ["integer", "null"]},
         "sub_seq": {"type": ["string", "null"]},
         "answer": {"type": "string"},
@@ -71,50 +98,78 @@ SEMANTIC_SCHEMA = {
     }
 }
 
+# ── System Prompts ────────────────────────────────────────────────────────────
+
 _SYSTEM_PROMPT = (
     "你是中学题目提取助手。\n"
-    "任务：从给定的 OCR 文本中，仅提取**完整的题目原文**（题干）。\n"
+    "任务：从给定的 OCR 文本中，提取完整的题目内容并输出结构化 JSON。\n\n"
+    "【题型识别规则】\n"
+    "- 含有 A. B. C. D. 或 A、B、C、D 选项的题目 → type='选择题'\n"
+    "- 含有括号空白或横线需要填写的 → type='填空题'\n"
+    "- 需要计算过程、证明、分析的 → type='解答题'/'计算题'/'证明题'\n"
+    "- 其他情况 → type='其他'\n\n"
+    "【选择题特别说明】\n"
+    "选项 A/B/C/D 是题目本身的组成部分，不是学生的答案。\n"
+    "必须将所有选项完整提取到 options 数组中，每个元素包含选项标号和内容。\n"
+    "例如：[\"A. $a > 0$\", \"B. 对称轴为 $x = \\\\frac{3}{2}$\", \"C. $b = 2a$\", \"D. $4a+2b+c<0$\"]\n\n"
+    "【过滤规则】\n"
+    "- 过滤：学生用笔写的答案、解题过程（通常在题目旁边或下方，字迹潦草）\n"
+    "- 过滤：红笔批改记号、对错符号\n"
+    "- 保留：题目印刷体文字、题干、选项、图片占位符 [图片: xxx]\n"
+    "- 保留：LaTeX 公式，用 $...$ 格式（行内）或 $$...$$ 格式（块级）\n\n"
+    "【输出规则】\n"
+    "1. 必须返回合法 JSON，不得包含任何其他内容、解释或 Markdown 代码块\n"
+    "2. problem 和 type 字段必填\n"
+    "3. 选择题的 options 必填且不能为空数组\n"
+    "4. 非选择题的 options 填空数组 []\n"
+    "5. 根据题目内容推断 subject（数学/语文/英语/物理/化学/生物/历史/地理/政治）\n"
+    "6. 根据题目内容推断 subject 必填项不能为 None\n"
+)
+
+_OCR_SYSTEM_PROMPT = (
+    "你是专业的试卷 OCR 助手。\n"
+    "任务：完整、准确地识别图片中的题目文本。\n"
     "规则：\n"
-    "1. 只返回题目本身，**不要**返回学生答案、解题过程、错因分析\n"
-    "2. 如果 OCR 文本中包含学生答题痕迹（如红笔批改、手写解答），请自动过滤\n"
-    "3. 数学公式保留 $...$ 格式（行内）或 $$...$$ 格式（块级）\n"
-    "4. 题目中的图片占位符 [图片: xxx] 请保留\n"
-    "5. 必须返回合法 JSON，不得包含任何其他内容、解释或 Markdown 代码块\n"
-    "6. JSON 中 problem 字段必填，其他字段可空\n"
-    "7. **请根据题目内容准确推断学科类型**（数学/语文/英语/物理/化学/生物/历史/地理/政治），"
-    "并在 subject 字段中返回最匹配的学科名称\n"
+    "1. 输出图片中所有可见的题目文字，包括题号、题干、选项（A/B/C/D）等\n"
+    "2. 数学公式用 $...$ 格式（行内）或 $$...$$ 格式（块级）\n"
+    "3. 保留原有的换行和结构，不要添加额外解释\n"
+    "4. 如果图片中有学生手写的答案或批改痕迹，请忽略，只输出印刷体题目\n"
+    "5. 只输出识别到的文本内容，不要说任何其他话\n"
 )
 
 
+# ── JSON 提取工具 ─────────────────────────────────────────────────────────────
+
 def _extract_json(text: str) -> str:
-    """
-    从模型输出中提取 JSON 字符串。
-    先尝试直接找 ```json ... ``` 代码块，再尝试找第一个 { 到最后一个 }。
-    """
-    # 1. 尝试提取 markdown json 代码块
     m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if m:
         return m.group(1)
-
-    # 2. 尝试找第一个 { 到最后一个 }
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
         return text[start:end + 1]
-
     return text
 
+
+# ── 语义分析 ─────────────────────────────────────────────────────────────────
 
 async def analyze_semantic(ocr_text: str) -> dict:
     """
     调用 Qwen2.5-VL 进行语义分析。
-    返回填充了语义字段的 dict（对应 SEMANTIC_SCHEMA）。
+    输入：MinerU OCR 提取的文本（或 Vision fallback 的识别文本）。
+    返回填充了语义字段的 dict（含 options 字段）。
     """
     model, processor = _load_model()
 
     messages = [
-        {"role": "system", "content": _SYSTEM_PROMPT + "\nSchema: " + json.dumps(SEMANTIC_SCHEMA, ensure_ascii=False)},
-        {"role": "user", "content": f"题目文本：\n\n{ocr_text}"}
+        {
+            "role": "system",
+            "content": _SYSTEM_PROMPT + "\nSchema: " + json.dumps(SEMANTIC_SCHEMA, ensure_ascii=False)
+        },
+        {
+            "role": "user",
+            "content": f"题目文本：\n\n{ocr_text}"
+        }
     ]
 
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -132,16 +187,12 @@ async def analyze_semantic(ocr_text: str) -> dict:
         )
 
     raw_content = processor.batch_decode(outputs, skip_special_tokens=True)[0]
-    # 去掉 prompt 部分，只保留 assistant 的回复
     raw_content = raw_content.split("assistant\n")[-1].strip()
 
     if settings.debug:
         logger.debug(f"[Qwen 原始输出]\n{raw_content[:500]}")
 
     json_str = _extract_json(raw_content)
-
-    # 修复模型输出中 LaTeX 反斜杠未转义的问题（如 \mathsf, \frac 等）
-    # 只修复 JSON 中非法的转义：前面不是 \ 且后面不是合法转义字符的单反斜杠
     json_str = re.sub(r'(?<!\\)\\(?!["\\\\/bfnrt])', r'\\\\', json_str)
 
     try:
@@ -150,8 +201,77 @@ async def analyze_semantic(ocr_text: str) -> dict:
         logger.error(f"Qwen 输出 JSON 解析失败: {e}\n原始: {raw_content[:500]}")
         raise RuntimeError(f"Qwen JSON 解析失败: {e}") from e
 
-    logger.info(f"Qwen 语义分析完成: subject={result.get('subject')}, type={result.get('type')}")
+    # 保证 options 字段始终存在（兼容旧版模型输出可能没有此字段）
+    if "options" not in result:
+        result["options"] = []
+
+    logger.info(
+        f"Qwen 语义分析完成: subject={result.get('subject')}, "
+        f"type={result.get('type')}, options数量={len(result.get('options', []))}"
+    )
     return result
+
+
+# ── Vision OCR（fallback）────────────────────────────────────────────────────
+
+async def ocr_image(image_path: Path) -> str:
+    """
+    直接用 Qwen2.5-VL 视觉能力识别图片中的题目文本。
+
+    供 pipeline.py 的 Vision fallback 调用：当 MinerU OCR 返回空文本时，
+    将裁切好的 ROI 原图传入此函数，Qwen 直接看图识文字。
+
+    返回识别到的文本（含 LaTeX 格式公式），失败时抛出异常。
+    """
+    model, processor = _load_model()
+
+    with open(image_path, "rb") as f:
+        image_data = base64.b64encode(f.read()).decode("utf-8")
+
+    ext = image_path.suffix.lower().lstrip(".")
+    media_type = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
+
+    messages = [
+        {"role": "system", "content": _OCR_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "image": f"data:{media_type};base64,{image_data}",
+                },
+                {
+                    "type": "text",
+                    "text": "请识别图片中的题目文本，完整输出所有文字内容。",
+                },
+            ],
+        },
+    ]
+
+    text = processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    inputs = processor(text=[text], return_tensors="pt").to(model.device)
+
+    if settings.debug:
+        logger.debug(f"[Qwen Vision OCR] 图片: {image_path.name}, 大小: {image_path.stat().st_size} bytes")
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=1000,
+            temperature=0,
+            do_sample=False,
+        )
+
+    raw_content = processor.batch_decode(outputs, skip_special_tokens=True)[0]
+    raw_content = raw_content.split("assistant\n")[-1].strip()
+
+    if settings.debug:
+        logger.debug(f"[Qwen Vision OCR 输出]\n{raw_content[:500]}")
+
+    logger.info(f"Qwen Vision OCR 完成，识别文本长度={len(raw_content)}")
+    return raw_content
 
 
 async def check_available() -> bool:

@@ -61,7 +61,7 @@ async def parse_image(image_path: Path) -> tuple[list[ContentBlock], float]:
             )
         resp.raise_for_status()
         data = resp.json()
-
+    logger.info(f"miner original response: {data}")
     if settings.debug:
         logger.debug(f"[MinerU raw] keys={list(data.keys())}")
 

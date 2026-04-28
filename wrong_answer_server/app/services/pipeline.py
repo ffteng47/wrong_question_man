@@ -6,6 +6,15 @@ Stage 2: Qwen2.5-VL 语义分析（条件触发）
 对外暴露两个函数：
 - run_upload()   : Stage1，用于 /api/v1/upload
 - run_extract()  : Stage1+ROI筛选+Stage2+Asset提取，用于 /api/v1/extract
+
+修改记录：
+  v1.1 - 新增 Vision fallback：当 MinerU OCR 返回空文本时，
+          自动裁切 ROI 原图直接送 Qwen Vision 识别。
+  v1.2 - 修复选择题选项丢失：
+          Qwen 现在返回独立的 options 字段（字符串数组）。
+          pipeline 在组装 problem_md 时，将 options 追加到题干后面，
+          前端显示的 problem 字段即为完整的"题干 + 选项"内容，
+          不需要修改前端渲染逻辑。
 """
 from __future__ import annotations
 import time
@@ -32,14 +41,11 @@ async def run_upload(
     """
     Stage1：原图 MinerU 全页解析。
     返回 content_blocks 预览供 Flutter 绘制 ROI 覆盖层。
-    注意：统一使用原图解析，保证前端 ROI 坐标与 blocks 坐标系一致。
     """
     t0 = time.perf_counter()
 
-    # 直接使用原图解析（不经过预处理），保证坐标系一致
     blocks, min_conf = await mineru_client.parse_image(original_path)
 
-    # 获取原图尺寸（客户端 ROI 基于此坐标系）
     import cv2
     img = cv2.imread(str(original_path))
     height, width = img.shape[:2]
@@ -49,13 +55,11 @@ async def run_upload(
     elapsed = int((time.perf_counter() - t0) * 1000)
     logger.info(f"run_upload 完成: {elapsed}ms, {len(blocks)} blocks, conf={min_conf:.3f}")
 
-    # 预览 blocks 只返回 id/type/bbox（减少传输量）
     preview = [
         ContentBlock(id=b.id, type=b.type, content="", bbox=b.bbox)
         for b in blocks
     ]
 
-    # 把完整 blocks 缓存在内存（按 image_id），供 extract 阶段复用
     import json
     cache_path = original_path.parent / f"{original_path.stem}_blocks.json"
     cache_path.write_text(
@@ -85,6 +89,10 @@ async def run_extract(
 ) -> ExtractResponse:
     """
     Stage2：从缓存 blocks 筛选 ROI → Qwen 语义分析 → Asset 裁切 → 组装记录
+
+    v1.2 变化：
+    - Qwen 返回的 options 字段追加到 problem_md，前端无需改动即可显示完整题目。
+    - 追加格式：每个选项占一行，与题干之间空一行。
     """
     t0 = time.perf_counter()
     debug_info: dict = {}
@@ -93,7 +101,6 @@ async def run_extract(
     original_path = _find_original(originals_dir, image_id)
     blocks, original_size = _load_cached_blocks(originals_dir, image_id)
 
-    # 若缓存 miss，重新解析
     if not blocks:
         logger.warning(f"blocks 缓存未命中，重新解析: {image_id}")
         blocks, _ = await mineru_client.parse_image(original_path)
@@ -102,7 +109,7 @@ async def run_extract(
         _h, _w = _img.shape[:2]
         original_size = [_w, _h]
 
-    # ── 将客户端 ROI（原图像素坐标）映射到 MinerU content_list 0~1000 坐标系 ──
+    # ── ROI 坐标映射 ──────────────────────────────────────────────────────
     mapped_roi = _remap_roi(roi_bbox, original_size)
     logger.info(
         f"ROI 坐标映射: 原图{original_size} → MinerU 0~1000, "
@@ -117,8 +124,21 @@ async def run_extract(
     ocr_text = mineru_client.blocks_to_text(filtered)
     logger.info(f"OCR 文本({len(ocr_text)}字): '{ocr_text[:200]}'")
 
+    # ── Vision fallback：OCR 为空时裁切 ROI 原图直接送 Qwen Vision ────────
+    vision_fallback_used = False
+    if not ocr_text.strip():
+        logger.warning("MinerU OCR 返回空文本，启动 Vision fallback")
+        try:
+            ocr_text = await _vision_fallback(original_path, roi_bbox, original_size)
+            vision_fallback_used = True
+            logger.info(f"Vision fallback 完成，识别文本({len(ocr_text)}字): '{ocr_text[:200]}'")
+        except Exception as e:
+            logger.error(f"Vision fallback 失败: {e}")
+            ocr_text = ""
+
     debug_info["ocr_text"] = ocr_text
     debug_info["filtered_block_count"] = len(filtered)
+    debug_info["vision_fallback_used"] = vision_fallback_used
 
     # ── figure 资源提取 ───────────────────────────────────────────────────
     import uuid
@@ -136,8 +156,27 @@ async def run_extract(
             debug_info["semantic_raw"] = semantic
         except Exception as e:
             logger.error(f"Qwen 语义分析失败: {e}")
-            # 降级：返回纯 OCR 结果，不抛出异常
             semantic = {}
+
+    # ── 组装 problem_md：题干 + 选项（选择题）───────────────────────────
+    # Qwen v1.2 起会返回独立的 options 字段。
+    # 此处将 options 追加到 problem 末尾，前端显示的 problem 字段即为完整题目，
+    # 无需前端做任何格式拼接。
+    problem_stem = semantic.get("problem", ocr_text)
+    options: list[str] = semantic.get("options", [])
+
+    if options:
+        options_md = "\n\n" + "\n".join(options)
+        problem_md = problem_stem + options_md
+        logger.info(f"选择题：追加 {len(options)} 个选项到 problem_md")
+    else:
+        problem_md = problem_stem
+
+    solution_md = semantic.get("solution", "")
+
+    if assets:
+        problem_md = asset_extractor.inject_assets_into_markdown(problem_md, assets)
+        solution_md = asset_extractor.inject_assets_into_markdown(solution_md, assets)
 
     # ── 组装 WrongAnswerRecord ────────────────────────────────────────────
     source = Source(
@@ -147,14 +186,6 @@ async def run_extract(
         page_height_px=0,
         user_selection=UserSelection(roi_bbox=roi_bbox),
     )
-
-    # 注入 assets 到 Markdown 文本
-    # 使用 Qwen 返回的 problem 作为题目（Qwen 已过滤学生答案）
-    problem_md = semantic.get("problem", ocr_text)
-    solution_md = semantic.get("solution", "")
-    if assets:
-        problem_md = asset_extractor.inject_assets_into_markdown(problem_md, assets)
-        solution_md = asset_extractor.inject_assets_into_markdown(solution_md, assets)
 
     error_data = semantic.get("error_analysis", {})
     error_analysis = ErrorAnalysis(
@@ -197,7 +228,6 @@ async def run_extract(
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
 
 def _find_original(originals_dir: Path, image_id: str) -> Path:
-    """按 image_id（stem）找原图，支持 jpg/jpeg/png"""
     for ext in (".jpg", ".jpeg", ".png", ".webp"):
         p = originals_dir / f"{image_id}{ext}"
         if p.exists():
@@ -208,18 +238,12 @@ def _find_original(originals_dir: Path, image_id: str) -> Path:
 def _load_cached_blocks(
     originals_dir: Path, image_id: str
 ) -> tuple[list[ContentBlock], list[int]]:
-    """
-    读取 run_upload 写入的 blocks 缓存。
-    返回 (blocks, original_size[w,h])。
-    缓存未命中时返回空列表和零尺寸。
-    """
     import json
     cache_path = originals_dir / f"{image_id}_blocks.json"
     if not cache_path.exists():
         return [], [0, 0]
     data = json.loads(cache_path.read_text(encoding="utf-8"))
 
-    # 兼容旧格式（纯列表）和新格式（带尺寸的字典）
     if isinstance(data, list):
         blocks = [ContentBlock(**b) for b in data]
         return blocks, [0, 0]
@@ -234,19 +258,11 @@ def _remap_roi(
     original_size: list[int],
 ) -> list[float]:
     """
-    将客户端传来的 ROI 坐标从原图像素坐标映射到 MinerU content_list 0~1000 坐标系。
-
-    MinerU 官方文档明确说明：content_list 中的 bbox 是 mapped to a range of 0-1000
-    的归一化坐标（相对于原图尺寸的百分比 × 1000）。
-    因此映射公式为：x_mu = x_orig / orig_w * 1000
-
-    参考：https://opendatalab.github.io/MinerU/reference/output_files/
+    将客户端 ROI（原图像素坐标）映射到 MinerU content_list 0~1000 坐标系。
     """
     ow, oh = original_size
-
     if ow == 0 or oh == 0:
         return roi
-
     x1, y1, x2, y2 = roi[:4]
     return [
         x1 / ow * 1000,
@@ -256,13 +272,55 @@ def _remap_roi(
     ]
 
 
+async def _vision_fallback(
+    original_path: Path,
+    roi_bbox: list[float],
+    original_size: list[int],
+) -> str:
+    """
+    Vision fallback：MinerU OCR 为空时，裁切 ROI 原图送 Qwen Vision 识别。
+    """
+    import cv2
+    import tempfile
+
+    img = cv2.imread(str(original_path))
+    if img is None:
+        logger.error(f"Vision fallback：无法读取原图 {original_path}")
+        return ""
+
+    ow, oh = original_size
+    x1, y1, x2, y2 = (int(v) for v in roi_bbox[:4])
+    pad = 20
+    x1 = max(0, x1 - pad)
+    y1 = max(0, y1 - pad)
+    x2 = min(ow, x2 + pad)
+    y2 = min(oh, y2 + pad)
+
+    cropped = img[y1:y2, x1:x2]
+    if cropped.size == 0:
+        logger.error("Vision fallback：裁切区域为空")
+        return ""
+
+    logger.info(f"Vision fallback：裁切区域 ({x1},{y1})-({x2},{y2})，尺寸 {x2-x1}x{y2-y1}")
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+        cv2.imwrite(str(tmp_path), cropped, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        text = await qwen_client.ocr_image(tmp_path)
+    finally:
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+    return text
+
+
 def _clean_latex(text: str) -> str:
     """清理 Qwen 返回的 LaTeX 中的多余转义字符"""
     if not text:
         return text
-    # 移除 \n 转义字符
     text = text.replace("\\n", "\n")
-    # 移除 \text{...} 标记
     import re
     text = re.sub(r"\\text\{", "", text)
     text = text.replace("}\\", "}")
