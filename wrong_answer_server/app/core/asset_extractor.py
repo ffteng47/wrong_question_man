@@ -17,6 +17,7 @@ def extract_assets(
     original_path: Path,
     figure_blocks: list[ContentBlock],
     record_id: str,
+    original_size: list[int] | None = None,
 ) -> list[Asset]:
     """
     从原图裁切所有 type=figure 的 block，保存到 assets/{record_id}/ 目录。
@@ -39,7 +40,18 @@ def extract_assets(
         dst_name = f"{fig_id}.png"
         dst_path = asset_dir / dst_name
 
-        x1, y1, x2, y2 = (int(v) for v in blk.bbox[:4])
+        # MinerU 返回的 bbox 是 0~1000 归一化坐标，需要映射回原图坐标
+        bbox = list(blk.bbox[:4])
+        if original_size and original_size[0] > 0 and original_size[1] > 0:
+            ow, oh = original_size
+            bbox = [
+                bbox[0] / 1000 * ow,
+                bbox[1] / 1000 * oh,
+                bbox[2] / 1000 * ow,
+                bbox[3] / 1000 * oh,
+            ]
+
+        x1, y1, x2, y2 = (int(v) for v in bbox)
         cropped = img.crop((x1, y1, x2, y2))
         cropped.save(str(dst_path), "PNG")
 
@@ -51,7 +63,7 @@ def extract_assets(
         asset = Asset(
             id=fig_id,
             src_path=rel_path,
-            bbox_in_original=list(blk.bbox[:4]),
+            bbox_in_original=list(bbox),
             caption=caption,
             markdown_ref=markdown_ref,
         )

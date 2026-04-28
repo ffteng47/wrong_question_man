@@ -145,7 +145,7 @@ async def run_extract(
     record_id = str(uuid.uuid4())
     figure_blocks = [b for b in filtered if b.type in ("figure", "image")]
     assets: list[Asset] = asset_extractor.extract_assets(
-        original_path, figure_blocks, record_id
+        original_path, figure_blocks, record_id, original_size=original_size
     )
 
     # ── 语义分析（Qwen）──────────────────────────────────────────────────
