@@ -205,6 +205,15 @@ async def analyze_semantic(ocr_text: str) -> dict:
     if "options" not in result:
         result["options"] = []
 
+    # ── LaTeX 公式清洗：去除过度空格化 ────────────────────────────────────────
+    result["problem"] = _clean_latex_formulas(result.get("problem", ""))
+    result["solution"] = _clean_latex_formulas(result.get("solution", ""))
+    result["answer"] = _clean_latex_formulas(result.get("answer", ""))
+    if result.get("options"):
+        result["options"] = [
+            _clean_latex_formulas(opt) for opt in result["options"]
+        ]
+
     logger.info(
         f"Qwen 语义分析完成: subject={result.get('subject')}, "
         f"type={result.get('type')}, options数量={len(result.get('options', []))}"
@@ -273,6 +282,70 @@ async def ocr_image(image_path: Path) -> str:
 
     logger.info(f"Qwen Vision OCR 完成，识别文本长度={len(raw_content)}")
     return raw_content
+
+
+def _clean_latex_math(inner: str) -> str:
+    """
+    清洗单个数学块内部的 LaTeX 公式，去除过度空格化。
+
+    处理模式：
+    - { \frac { 1 } { x ^ { 2 } } } → \frac{1}{x^{2}}
+    - { \sqrt { x ^ { 2 } + 1 } } → \sqrt{x^{2}+1}
+    - x ^ { 2 } → x^{2}
+    """
+    # 迭代清洗直到稳定（处理嵌套花括号）
+    prev = None
+    while prev != inner:
+        prev = inner
+
+        # 1. 命令与参数之间的空格：\frac { → \frac{
+        inner = re.sub(r'\\([a-zA-Z]+)\s+\{', r'\\\1{', inner)
+
+        # 2. 花括号内部的多余空格：{ 1 } → {1}
+        inner = re.sub(r'\{\s+([^}{]*?)\s+\}', r'{\1}', inner)
+
+        # 3. 运算符与花括号之间的空格：x ^ { → x^{, x _ { → x_{
+        inner = re.sub(r'(\w)\s*\^\s*\{', r'\1^{', inner)
+        inner = re.sub(r'(\w)\s*_\s*\{', r'\1_{', inner)
+
+    # 4. 移除最外层无意义的花括号包裹：{ \frac{...}{...} } → \frac{...}{...}
+    inner = re.sub(r'^\{\s*(\\.+?)\s*\}$', r'\1', inner)
+
+    # 5. 运算符周围的多余空格（保留数学意义）
+    inner = re.sub(r'\s*([=+\-*/<>])\s*', r'\1', inner)
+
+    return inner
+
+
+def _clean_latex_formulas(text: str) -> str:
+    """
+    清洗文本中的 LaTeX 公式块（$...$ 和 $$...$$）。
+    复用 importdata.py 的"保护数学块 → 清洗内部 → 恢复"框架。
+    """
+    if not text:
+        return text
+
+    math_blocks = []
+    math_pattern = re.compile(r'(\$[^$]+\$|\$\$[^$]+\$\$)')
+
+    def replace_math(match):
+        raw = match.group(0)
+        if raw.startswith('$$') and raw.endswith('$$'):
+            inner = raw[2:-2]
+            cleaned = _clean_latex_math(inner)
+            math_blocks.append(f'$${cleaned}$$')
+        else:
+            inner = raw[1:-1]
+            cleaned = _clean_latex_math(inner)
+            math_blocks.append(f'${cleaned}$')
+        return f"@@MATH_BLOCK_{len(math_blocks)-1}@@"
+
+    text = math_pattern.sub(replace_math, text)
+
+    for i, block in enumerate(math_blocks):
+        text = text.replace(f"@@MATH_BLOCK_{i}@@", block)
+
+    return text
 
 
 async def check_available() -> bool:
