@@ -78,6 +78,7 @@ def inject_assets_into_markdown(text: str, assets: list[Asset]) -> str:
             f"[图片:assets/{asset.id}]",
             f"[图片]",
             f"[figure_{i+1}]",
+            f"[图片: unknown]",
         ]
         replaced = False
         for ph in placeholders:

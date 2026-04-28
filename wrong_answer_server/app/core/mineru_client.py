@@ -97,12 +97,16 @@ async def parse_image(image_path: Path) -> tuple[list[ContentBlock], float]:
         # equation 类型的 content 可能是 LaTeX
         latex = content if blk_type == "formula" else None
 
+        # figure/image 类型的 img_path 需要提取为 asset_path
+        img_path = blk.get("img_path") or blk.get("image_path")
+
         blocks.append(ContentBlock(
             id=f"blk_{i}",
             type=blk_type,
             content=content,
             bbox=bbox,
             latex=latex,
+            asset_path=img_path,
             score=None,  # content_list 中没有置信度
         ))
 
