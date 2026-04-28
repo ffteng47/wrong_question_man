@@ -229,7 +229,7 @@ async def ocr_image(image_path: Path) -> str:
     image = Image.open(image_path)
 
     messages = [
-        {"role": "system", "content": _OCR_SYSTEM_PROMPT},
+        {"role": "system", "content": [{"type": "text", "text": _OCR_SYSTEM_PROMPT}]},
         {
             "role": "user",
             "content": [
