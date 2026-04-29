@@ -162,6 +162,15 @@ _OCR_SYSTEM_PROMPT = (
     "5. 只输出识别到的文本内容，不要说任何其他话\n"
 )
 
+_FIGURE_DETECTION_PROMPT = (
+    "检测图片中的所有插图、示意图、几何图形或图表。"
+    "忽略纯文字区域，只检测包含图形、线条、形状的非文字视觉元素。"
+    "对每个检测到的图形，输出其边界框坐标和简要类型标签。"
+    "输出格式：JSON数组，每个元素为 "
+    '{"bbox_2d": [x1, y1, x2, y2], "label": "图形类型"}。'
+    "如果没有检测到任何图形，返回空数组 []。"
+)
+
 
 # ── JSON 提取工具 ─────────────────────────────────────────────────────────────
 
@@ -307,6 +316,80 @@ async def ocr_image(image_path: Path) -> str:
 
     logger.info(f"Qwen Vision OCR 完成，识别文本长度={len(raw_content)}")
     return raw_content
+
+
+# ── Visual Grounding：插图/示意图检测 ─────────────────────────────────────────
+
+async def detect_figures_in_image(image_path: Path) -> list[dict]:
+    """
+    使用 Qwen2.5-VL visual grounding 检测图片中的插图/示意图。
+
+    返回: [{"bbox_2d": [x1, y1, x2, y2], "label": "..."}, ...]
+    坐标为输入图片内的绝对像素坐标。
+
+    参考:
+    - FinChart-Bench chart提取prompt: https://arxiv.org/html/2507.14823v1
+    - PyImageSearch grounding教程: https://pyimagesearch.com/2025/06/09/object-detection-and-visual-grounding-with-qwen-2-5/
+    """
+    model, processor = _load_model()
+    image = Image.open(image_path)
+
+    messages = [
+        {
+            "role": "system",
+            "content": [{"type": "text", "text": "你是专业的文档图像分析助手，擅长检测插图和示意图。"}]
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": _FIGURE_DETECTION_PROMPT},
+            ],
+        },
+    ]
+
+    inputs = processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt",
+    ).to(model.device)
+
+    if settings.debug:
+        logger.debug(f"[Qwen Figure Detection] 图片: {image_path.name}")
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=500,
+            temperature=0,
+            do_sample=False,
+        )
+
+    raw_content = processor.batch_decode(outputs, skip_special_tokens=True)[0]
+    raw_content = raw_content.split("assistant\n")[-1].strip()
+
+    if settings.debug:
+        logger.debug(f"[Qwen Figure Detection 输出]\n{raw_content[:500]}")
+
+    # 提取 JSON
+    json_str = _extract_json(raw_content)
+    if not json_str:
+        return []
+
+    try:
+        result = json.loads(json_str)
+        if isinstance(result, list):
+            logger.info(f"Qwen 图形检测完成，检测到 {len(result)} 个图形")
+            return result
+        if isinstance(result, dict) and "bbox_2d" in result:
+            logger.info("Qwen 图形检测完成，检测到 1 个图形")
+            return [result]
+        return []
+    except json.JSONDecodeError:
+        logger.warning(f"图形检测 JSON 解析失败: {raw_content[:200]}")
+        return []
 
 
 def _clean_latex_math(inner: str) -> str:

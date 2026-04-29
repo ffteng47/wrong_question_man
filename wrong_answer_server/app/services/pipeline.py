@@ -126,12 +126,18 @@ async def run_extract(
 
     # ── Vision fallback：OCR 为空时裁切 ROI 原图直接送 Qwen Vision ────────
     vision_fallback_used = False
+    extra_figures: list[ContentBlock] = []
     if not ocr_text.strip():
         logger.warning("MinerU OCR 返回空文本，启动 Vision fallback")
         try:
-            ocr_text = await _vision_fallback(original_path, roi_bbox, original_size)
+            ocr_text, extra_figures = await _vision_fallback(
+                original_path, roi_bbox, original_size
+            )
             vision_fallback_used = True
-            logger.info(f"Vision fallback 完成，识别文本({len(ocr_text)}字): '{ocr_text[:200]}'")
+            logger.info(
+                f"Vision fallback 完成，识别文本({len(ocr_text)}字), "
+                f"检测到插图({len(extra_figures)}个)"
+            )
         except Exception as e:
             logger.error(f"Vision fallback 失败: {e}")
             ocr_text = ""
@@ -144,6 +150,12 @@ async def run_extract(
     import uuid
     record_id = str(uuid.uuid4())
     figure_blocks = [b for b in filtered if b.type in ("figure", "image")]
+
+    # 将 Qwen visual grounding 检测到的插图追加到 figure_blocks
+    if extra_figures:
+        figure_blocks.extend(extra_figures)
+        logger.info(f"追加 {len(extra_figures)} 个 Qwen 检测到的插图到 figure_blocks")
+
     assets: list[Asset] = asset_extractor.extract_assets(
         original_path, figure_blocks, record_id, original_size=original_size
     )
@@ -276,9 +288,13 @@ async def _vision_fallback(
     original_path: Path,
     roi_bbox: list[float],
     original_size: list[int],
-) -> str:
+) -> tuple[str, list[ContentBlock]]:
     """
     Vision fallback：MinerU OCR 为空时，裁切 ROI 原图送 Qwen Vision 识别。
+
+    返回: (ocr_text, extra_figure_blocks)
+    extra_figure_blocks 是 Qwen visual grounding 检测到的插图，用于补充
+    MinerU 未检测到的 figure。
     """
     import cv2
     import tempfile
@@ -286,34 +302,83 @@ async def _vision_fallback(
     img = cv2.imread(str(original_path))
     if img is None:
         logger.error(f"Vision fallback：无法读取原图 {original_path}")
-        return ""
+        return "", []
 
     ow, oh = original_size
-    x1, y1, x2, y2 = (int(v) for v in roi_bbox[:4])
+    roi_x1, roi_y1, roi_x2, roi_y2 = (int(v) for v in roi_bbox[:4])
     pad = 20
-    x1 = max(0, x1 - pad)
-    y1 = max(0, y1 - pad)
-    x2 = min(ow, x2 + pad)
-    y2 = min(oh, y2 + pad)
+    x1 = max(0, roi_x1 - pad)
+    y1 = max(0, roi_y1 - pad)
+    x2 = min(ow, roi_x2 + pad)
+    y2 = min(oh, roi_y2 + pad)
 
     cropped = img[y1:y2, x1:x2]
     if cropped.size == 0:
         logger.error("Vision fallback：裁切区域为空")
-        return ""
+        return "", []
 
     logger.info(f"Vision fallback：裁切区域 ({x1},{y1})-({x2},{y2})，尺寸 {x2-x1}x{y2-y1}")
 
     tmp_path = None
+    ocr_text = ""
+    detections: list[dict] = []
+
     try:
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             tmp_path = Path(tmp.name)
         cv2.imwrite(str(tmp_path), cropped, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        text = await qwen_client.ocr_image(tmp_path)
+
+        # 1. OCR 识别文字
+        ocr_text = await qwen_client.ocr_image(tmp_path)
+
+        # 2. Visual Grounding 检测插图（在临时文件删除前完成）
+        try:
+            detections = await qwen_client.detect_figures_in_image(tmp_path)
+        except Exception as e:
+            logger.warning(f"Visual grounding 插图检测失败: {e}")
+
     finally:
         if tmp_path and tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
 
-    return text
+    # 3. 将检测到的 bbox 映射回原图坐标系，构造 ContentBlock
+    extra_figures: list[ContentBlock] = []
+    for i, det in enumerate(detections):
+        bbox_2d = det.get("bbox_2d", [])
+        if len(bbox_2d) != 4:
+            continue
+
+        cx1, cy1, cx2, cy2 = (float(v) for v in bbox_2d)
+
+        # 映射回原图绝对像素坐标
+        orig_x1 = x1 + cx1
+        orig_y1 = y1 + cy1
+        orig_x2 = x1 + cx2
+        orig_y2 = y1 + cy2
+
+        # 转换为 0~1000 归一化坐标（与 MinerU 返回的 ContentBlock.bbox 坐标系一致）
+        mapped_bbox = [
+            orig_x1 / ow * 1000,
+            orig_y1 / oh * 1000,
+            orig_x2 / ow * 1000,
+            orig_y2 / oh * 1000,
+        ]
+
+        extra_figures.append(ContentBlock(
+            id=f"qwen_fig_{i}",
+            type="figure",
+            content=det.get("label", "插图"),
+            bbox=mapped_bbox,
+            asset_path=None,
+            score=None,
+        ))
+        logger.info(
+            f"Qwen 检测到插图: label={det.get('label')}, "
+            f"roi_bbox=[{cx1:.0f},{cy1:.0f},{cx2:.0f},{cy2:.0f}], "
+            f"orig_bbox=[{orig_x1:.0f},{orig_y1:.0f},{orig_x2:.0f},{orig_y2:.0f}]"
+        )
+
+    return ocr_text, extra_figures
 
 
 def _clean_latex(text: str) -> str:
