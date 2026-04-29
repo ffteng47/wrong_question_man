@@ -74,6 +74,32 @@ SEMANTIC_SCHEMA = {
                 "选项是题目的固有组成部分，不是学生答案，必须完整提取。"
             )
         },
+        "subject": {"type": "string"},
+        "tags": {"type": "array", "items": {"type": "string"}}
+    }
+}
+
+SEMANTIC_SCHEMA_bak = {
+    "type": "object",
+    "required": ["problem", "type"],
+    "properties": {
+        "type": {
+            "type": "string",
+            "description": "题目类型，必须是以下之一：选择题、填空题、解答题、判断题、计算题、证明题、作图题、阅读理解、完形填空、其他"
+        },
+        "problem": {
+            "type": "string",
+            "description": "完整的题目题干（不含选项）。保留 LaTeX 公式 $...$ 格式，过滤学生手写答题痕迹。"
+        },
+        "options": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "【仅选择题填写，其他题型留空数组】"
+                "选择题的所有选项，每个元素是一个完整选项字符串，含选项标号，例如：'A. $a > 0$'。"
+                "选项是题目的固有组成部分，不是学生答案，必须完整提取。"
+            )
+        },
         "seq": {"type": ["integer", "null"]},
         "sub_seq": {"type": ["string", "null"]},
         "answer": {"type": "string"},
@@ -97,12 +123,11 @@ SEMANTIC_SCHEMA = {
         "tags": {"type": "array", "items": {"type": "string"}}
     }
 }
-
 # ── System Prompts ────────────────────────────────────────────────────────────
 
 _SYSTEM_PROMPT = (
     "你是中学题目提取助手。\n"
-    "任务：从给定的 OCR 文本中，提取完整的题目内容并输出结构化 JSON。\n\n"
+    "任务：从给定的 OCR 文本中，提取完整的题目内容并输出结构化 JSON。必须过滤手写痕迹。\n\n"
     "【题型识别规则】\n"
     "- 含有 A. B. C. D. 或 A、B、C、D 选项的题目 → type='选择题'\n"
     "- 含有括号空白或横线需要填写的 → type='填空题'\n"
