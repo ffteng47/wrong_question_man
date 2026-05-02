@@ -247,4 +247,80 @@ class SyncService {
       uploadedImages: uploadedAny,
     );
   }
+
+  /// 教师分配错题给学生（通过临时题目）
+  ///
+  /// 流程：
+  /// 1. 检查登录状态
+  /// 2. 上传相关图片（如果选择）
+  /// 3. 调用 semecTeaching API 保存临时题目
+  Future<SyncResult> assignToStudentViaTemp({
+    required WrongAnswerRecord record,
+    required int targetUserId,
+    required bool keepLocal,
+    required bool uploadImage,
+  }) async {
+    // 1. 检查登录
+    if (!isLoggedIn) {
+      return SyncResult(
+        success: false,
+        error: '未登录 semecTeaching，请先登录',
+      );
+    }
+
+    final user = currentUser!;
+
+    // 2. 上传图片（如果选择）
+    String? imagePath;
+    bool uploadedAny = false;
+
+    if (uploadImage && record.assets.isNotEmpty) {
+      final file = File(record.assets.first.srcPath);
+      if (await file.exists()) {
+        final uploadResult = await _api.uploadImage(file);
+        if (uploadResult.success && uploadResult.url != null) {
+          imagePath = uploadResult.url;
+          uploadedAny = true;
+        }
+      }
+    }
+
+    // 3. 保存临时题目
+    final saveResult = await _api.saveTempQuestion(
+      authorId: user.id,
+      subject: record.subject,
+      grade: record.grade,
+      content: record.problem,
+      answer: record.answer.isNotEmpty ? record.answer : null,
+      solution: record.solution.isNotEmpty ? record.solution : null,
+      knowledgePoints: record.knowledgePoints.isNotEmpty ? record.knowledgePoints : null,
+      difficulty: record.difficulty,
+      imagePath: imagePath,
+      studentIds: [targetUserId],
+      questionType: '其他',
+    );
+
+    if (saveResult.success) {
+      // 本地 SQLite 更新
+      if (keepLocal) {
+        record.assignedToStudentId = targetUserId.toString();
+        record.assignStatus = 'assigned';
+        await DbHelper.instance.upsert(record);
+      }
+
+      return SyncResult(
+        success: true,
+        studentSaved: true,
+        teacherSaved: true,
+        incorrectId: saveResult.incorrectId,
+        uploadedImages: uploadedAny,
+      );
+    } else {
+      return SyncResult(
+        success: false,
+        error: saveResult.error ?? '保存失败',
+        uploadedImages: uploadedAny,
+      );
+    }
+  }
 }

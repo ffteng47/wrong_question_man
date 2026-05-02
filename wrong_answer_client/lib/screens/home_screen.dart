@@ -42,6 +42,25 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _load() async {
     setState(() => _loading = true);
     final isTeacher = SyncService.instance.currentUser?.role == 'teacher';
+    
+    // Token失效检测：如果是教师且未登录semecTeaching，提示登录
+    if (isTeacher && !SyncService.instance.isLoggedIn) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('未登录 semecTeaching，部分功能（如分配学生）需要登录后才能使用'),
+              duration: Duration(seconds: 5),
+              action: SnackBarAction(
+                label: '去登录',
+                onPressed: null, // 由设置页面处理登录
+              ),
+            ),
+          );
+        }
+      });
+    }
+    
     final records = await DbHelper.instance.query(
       subject: _filterSubject,
       grade: _filterGrade,

@@ -12,11 +12,13 @@ class AssignResult {
   final int studentId;
   final String studentName;
   final bool keepLocal;
+  final bool uploadImage;
 
   AssignResult({
     required this.studentId,
     required this.studentName,
     required this.keepLocal,
+    this.uploadImage = false,
   });
 }
 
@@ -305,10 +307,43 @@ class _AssignStudentScreenState extends State<AssignStudentScreen> {
     );
   }
 
-  void _confirm() {
+  void _confirm() async {
     if (_selectedStudentIds.isEmpty) return;
 
-    // 当前仅支持单选（需求文档确认），取第一个选中的学生
+    // 显示确认对话框，询问是否上传图片
+    final shouldUpload = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('确认分配'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('已选择 ${_selectedStudentIds.length} 名学生'),
+            const SizedBox(height: 16),
+            const Text('是否同时上传题目图片到semecTeaching？'),
+            const SizedBox(height: 8),
+            const Text(
+              '上传后可在临时题目管理中查看图片核对OCR结果',
+              style: TextStyle(color: Colors.grey, fontSize: 12),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('不上传'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('上传图片'),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldUpload == null) return; // 用户取消
+
     final selected = _allStudents.firstWhere(
       (s) => _selectedStudentIds.contains(s.id),
     );
@@ -317,6 +352,7 @@ class _AssignStudentScreenState extends State<AssignStudentScreen> {
       studentId: selected.id,
       studentName: selected.name,
       keepLocal: _keepLocal,
+      uploadImage: shouldUpload,
     ));
   }
 }

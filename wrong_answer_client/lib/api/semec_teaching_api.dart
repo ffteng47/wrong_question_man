@@ -133,7 +133,9 @@ class SemecTeachingApi {
             error.response?.statusCode == 403) {
           final errMsg = error.response?.data?['error']?.toString() ?? '';
           if (errMsg.contains('token') || errMsg.contains('CSRF')) {
-            // Token 可能过期，但保留用户状态，让调用方决定重试
+            // Token 可能过期，清除本地 token
+            print('[SEMEC] Token 过期或无效，清除本地认证状态');
+            await clearTokens();
           }
         }
         handler.next(error);
@@ -417,6 +419,62 @@ class SemecTeachingApi {
         error: resp.data?['message'] ?? '保存失败',
       );
     } on DioException catch (e) {
+      return SemecSaveResult(
+        success: false,
+        error: e.response?.data?['message'] ?? e.message ?? '网络错误',
+      );
+    } catch (e) {
+      return SemecSaveResult(success: false, error: e.toString());
+    }
+  }
+
+  // ── 保存临时题目到 semecTeaching ──────────────────────────────────────────
+  Future<SemecSaveResult> saveTempQuestion({
+    required int authorId,
+    required String subject,
+    String? grade,
+    required String content,
+    String? answer,
+    String? solution,
+    List<String>? knowledgePoints,
+    String? difficulty,
+    String? imagePath,
+    List<int>? studentIds,
+    String? questionType,
+  }) async {
+    try {
+      final resp = await _dio.post('/api/questions/temp', data: {
+        'author_id': authorId,
+        'subject': subject,
+        'grade': grade,
+        'content': content,
+        'answer': answer,
+        'solution': solution,
+        'knowledge_point_ids': knowledgePoints,
+        'difficulty': difficulty,
+        'image_path': imagePath,
+        'student_ids': studentIds,
+        'question_type': questionType,
+      });
+
+      if (resp.statusCode == 200 && resp.data?['success'] == true) {
+        final data = resp.data!['data'] as Map<String, dynamic>;
+        return SemecSaveResult(
+          success: true,
+          incorrectId: data['question_id'] as int?,
+        );
+      }
+      return SemecSaveResult(
+        success: false,
+        error: resp.data?['message'] ?? '保存失败',
+      );
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 401) {
+        return SemecSaveResult(
+          success: false,
+          error: '登录已过期，请重新登录',
+        );
+      }
       return SemecSaveResult(
         success: false,
         error: e.response?.data?['message'] ?? e.message ?? '网络错误',
