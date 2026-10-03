@@ -47,3 +47,18 @@ Thumbs.db
 
 # Storage
 storage/
+
+# npm（mavon-editor 实验产物，非 Flutter 依赖）
+wrong_answer_client/node_modules/
+wrong_answer_client/package.json
+wrong_answer_client/package-lock.json
+
+# 本地临时调试文件 / 编辑器备份
+.qoder/
+* copy.dart
+/2.jpg
+/2026-04-28_222557_157.png
+/s.md
+/test_e2e_vision.py
+/test_vision_fix.py
+/test_vision_fix_v2.py
