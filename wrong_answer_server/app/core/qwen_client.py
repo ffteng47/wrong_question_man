@@ -46,6 +46,21 @@ SEMANTIC_SCHEMA = {
             )
         },
         "subject": {"type": "string"},
+        "answer": {
+            "type": "string",
+            "description": "参考答案/标准答案。仅当 OCR 文本中存在印刷体标准答案时提取；学生手写作答不算。没有则空字符串。"
+        },
+        "solution": {
+            "type": "string",
+            "description": "参考解析/解题过程。仅当 OCR 文本中存在印刷体解析时提取；学生手写作答不算。没有则空字符串。"
+        },
+        "student_answer": {
+            "type": "string",
+            "description": (
+                "若 OCR 文本中混有学生的手写作答/解题过程（如「解：设…」「答：…」及算式推导），"
+                "将其完整原样提取到这里；没有则为空字符串。"
+            )
+        },
         "tags": {"type": "array", "items": {"type": "string"}}
     }
 }
@@ -65,16 +80,22 @@ _SYSTEM_PROMPT = (
     "必须将所有选项完整提取到 options 数组中，每个元素包含选项标号和内容。\n"
     "例如：[\"A. $a > 0$\", \"B. 对称轴为 $x = \\\\frac{3}{2}$\", \"C. $b = 2a$\", \"D. $4a+2b+c<0$\"]\n\n"
     "【过滤规则】\n"
-    "- 过滤：学生用笔写的答案、解题过程（通常在题目旁边或下方，字迹潦草）\n"
+    "- 学生用笔写的答案、解题过程（通常在题目旁边或下方，字迹潦草）：不要混入 problem，而是完整原样提取到 student_answer 字段\n"
     "- 过滤：红笔批改记号、对错符号\n"
     "- 保留：题目印刷体文字、题干、选项、图片占位符 [图片: xxx]\n"
     "- 保留：LaTeX 公式，用 $...$ 格式（行内）或 $$...$$ 格式（块级）\n\n"
+    "【答案与解析字段】\n"
+    "- answer：仅提取印刷体的标准答案/参考答案；学生手写作答不算，放 student_answer\n"
+    "- solution：仅提取印刷体的参考解析/解题过程；学生手写的解题过程不算，放 student_answer\n"
+    "- student_answer：抽取时若文本里混有学生手写作答/解题过程，完整原样提取到这里，并从 problem 中剔除\n"
+    "- 以上三个字段若无内容则填空字符串 \\\"\\\"\n\n"
     "【输出规则】\n"
     "1. 必须返回合法 JSON，不得包含任何其他内容、解释或 Markdown 代码块\n"
     "2. problem、type、subject 字段必填，且不能为 null\n"
     "3. 选择题的 options 必填且不能为空数组\n"
     "4. 非选择题的 options 填空数组 []\n"
     "5. subject 必须是：数学/语文/英语/物理/化学/生物/历史/地理/政治 之一\n"
+    "6. answer/solution/student_answer 无内容时填空字符串，不要省略字段，不能为 null\n"
 )
 
 _OCR_SYSTEM_PROMPT = (

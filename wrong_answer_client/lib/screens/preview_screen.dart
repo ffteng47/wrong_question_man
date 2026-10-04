@@ -200,6 +200,13 @@ class _ProblemTab extends StatelessWidget {
     required this.onToggleAnswer,
   });
 
+  String get _answerTextOf {
+    if (record.answer.trim().isNotEmpty) return record.answer;
+    final hand = record.errorAnalysis.studentAnswer.trim();
+    if (hand.isNotEmpty) return '【学生作答】\n$hand';
+    return '（未识别）';
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListView(
@@ -238,7 +245,7 @@ class _ProblemTab extends StatelessWidget {
           ),
           secondChild: _Card(
             child: MathMarkdown(
-                data: record.answer.isEmpty ? '（未识别）' : record.answer,
+                data: _answerTextOf,
                 fontSize: 15,
                 selectable: true),
           ),

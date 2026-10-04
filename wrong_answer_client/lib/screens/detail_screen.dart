@@ -211,6 +211,13 @@ class _DetailScreenState extends State<DetailScreen>
     );
   }
 
+  String get _answerText {
+    if (_record.answer.trim().isNotEmpty) return _record.answer;
+    final hand = _record.errorAnalysis.studentAnswer.trim();
+    if (hand.isNotEmpty) return '【学生作答】\n$hand';
+    return '（未识别）';
+  }
+
   Widget _buildProblemTab() {
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -244,7 +251,7 @@ class _DetailScreenState extends State<DetailScreen>
                 style: TextStyle(color: AppColors.textMuted, fontSize: 13))),
           ),
           secondChild: _card(child: MathMarkdown(
-              data: _record.answer.isEmpty ? '（未识别）' : _record.answer,
+              data: _answerText,
               fontSize: 15,
               selectable: true)),
           crossFadeState: _showAnswer

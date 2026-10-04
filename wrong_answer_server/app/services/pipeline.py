@@ -193,6 +193,9 @@ async def run_extract(
     )
 
     error_data = semantic.get("error_analysis", {})
+    # 无 answer_region 时 handwriting_ocr 不触发，学生手写作答由语义模型从整块 OCR 中分离
+    if not student_answer:
+        student_answer = (error_data.get("student_answer") or semantic.get("student_answer") or "").strip()
     error_analysis = ErrorAnalysis(
         student_answer=error_data.get("student_answer") or student_answer,
         error_category=error_data.get("error_category", "未知"),  # type: ignore
