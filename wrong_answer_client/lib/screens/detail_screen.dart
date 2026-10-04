@@ -3,6 +3,7 @@
 // 已保存记录的详情页（只读，可修改复习状态）
 //
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../models/wrong_answer_record.dart';
 import '../services/sync_service.dart';
 import '../utils/db_helper.dart';
@@ -381,6 +382,18 @@ class _DetailScreenState extends State<DetailScreen>
         ],
         const Divider(height: 24),
         _metaRow('录入时间', _formatDate(_record.createdAt)),
+        const Divider(height: 24),
+        InkWell(
+          onTap: () {
+            Clipboard.setData(ClipboardData(text: _record.id));
+            ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('记录ID已复制'),
+                    duration: Duration(seconds: 2)));
+          },
+          child: _metaRow('记录ID', _record.id.length > 13
+              ? '${_record.id.substring(0, 8)}…${_record.id.substring(_record.id.length - 4)}（点击复制）'
+              : _record.id),
+        ),
       ],
     );
   }

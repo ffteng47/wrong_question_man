@@ -189,21 +189,31 @@ class _HomeScreenState extends State<HomeScreen> {
                   style: const TextStyle(fontWeight: FontWeight.w600)),
             ),
           const SizedBox(height: 12),
-          // 学生：纸面作业链路入口（与错题录入并列的第二入口）
-          if (SyncService.instance.currentUser?.role == 'student') ...[
-            FloatingActionButton.extended(
-              heroTag: 'paper',
-              onPressed: () => Navigator.push(context,
+          // 纸面作业链路入口（多页连拍/批量上传，需登录学校服务器）
+          FloatingActionButton.extended(
+            heroTag: 'paper',
+            onPressed: () {
+              final user = SyncService.instance.currentUser;
+              if (user == null || !SyncService.instance.isLoggedIn) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('作业链路需在学校内登录：设置 → semecTeaching 登录'),
+                    duration: Duration(seconds: 4),
+                  ),
+                );
+                return;
+              }
+              Navigator.push(context,
                   MaterialPageRoute(builder: (_) =>
-                      const PaperPickScreen())),
-              backgroundColor: AppColors.green,
-              foregroundColor: AppColors.bg0,
-              icon: const Icon(Icons.document_scanner_outlined),
-              label: const Text('纸面作业',
-                  style: TextStyle(fontWeight: FontWeight.w600)),
-            ),
-            const SizedBox(height: 12),
-          ],
+                      const PaperPickScreen()));
+            },
+            backgroundColor: AppColors.green,
+            foregroundColor: AppColors.bg0,
+            icon: const Icon(Icons.document_scanner_outlined),
+            label: const Text('纸面作业',
+                style: TextStyle(fontWeight: FontWeight.w600)),
+          ),
+          const SizedBox(height: 12),
           FloatingActionButton.extended(
             heroTag: 'add',
             onPressed: () async {
