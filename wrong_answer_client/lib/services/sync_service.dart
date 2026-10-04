@@ -294,7 +294,7 @@ class SyncService {
       answer: record.answer.isNotEmpty ? record.answer : null,
       solution: record.solution.isNotEmpty ? record.solution : null,
       knowledgePoints: record.knowledgePoints.isNotEmpty ? record.knowledgePoints : null,
-      difficulty: record.difficulty,
+      difficulty: '${record.difficulty}',
       imagePath: imagePath,
       studentIds: [targetUserId],
       questionType: '其他',

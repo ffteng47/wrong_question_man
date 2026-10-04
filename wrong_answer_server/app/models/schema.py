@@ -50,7 +50,15 @@ class KnowledgePoint(BaseModel):
     point: str
 
 
-# ── 用户选区（Flutter 传来的 ROI）────────────────────────────────────────────
+# ── 用户选区（Flutter 传来的框选区域）───────────────────────────────────────
+
+class Region(BaseModel):
+    bbox: list[float]                    # [x1, y1, x2, y2]
+    coord_space: Literal["pixel", "0_1000"] = "0_1000"
+    image_path: Optional[str] = None     # 服务端按此区域裁切后的相对路径
+    text: str = ""                       # 该区域的识别文本（题干/手写作答）
+    confidence: Optional[float] = None   # 保留字段，当前无可靠置信度
+
 
 class UserSelection(BaseModel):
     roi_bbox: list[float]                # [x1, y1, x2, y2] 相对原图像素
@@ -117,14 +125,49 @@ class UploadResponse(BaseModel):
 
 class ExtractRequest(BaseModel):
     image_id: str
-    roi_bbox: list[float]                # [x1, y1, x2, y2]
+    question_region: Optional[Region] = None      # 题区
+    answer_region: Optional[Region] = None        # 手写答案区（可选）
+    # 旧版兼容：像素坐标 ROI
+    roi_bbox: Optional[list[float]] = None
     image_source: Literal["camera", "scanner"] = "camera"
     enable_semantic: bool = True
+
+    def resolved_question_region(self) -> Region:
+        if self.question_region is not None:
+            return self.question_region
+        if self.roi_bbox is not None:
+            return Region(bbox=self.roi_bbox, coord_space="pixel")
+        raise ValueError("缺少 question_region / roi_bbox")
 
 
 class ExtractResponse(BaseModel):
     record: WrongAnswerRecord
     debug: Optional[dict] = None         # debug=True 时附带原始响应
+
+
+# ── 异步任务 ─────────────────────────────────────────────────────────────────
+
+TaskKind = Literal["parse", "extract"]
+TaskStatus = Literal["pending", "processing", "done", "failed"]
+
+
+class TaskInfo(BaseModel):
+    task_id: str
+    kind: TaskKind
+    status: TaskStatus = "pending"
+    created_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+    updated_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+    result: Optional[dict] = None        # done 时为 UploadResponse / ExtractResponse 的 dict
+    error: Optional[str] = None          # failed 时的错误信息
+
+
+class TaskAccepted(BaseModel):
+    task_id: str
+    image_id: Optional[str] = None       # upload 时返回，供后续 extract 使用
 
 
 class SaveRequest(BaseModel):

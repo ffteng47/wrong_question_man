@@ -10,9 +10,10 @@ class Settings(BaseSettings):
     api_port: int = 9000
 
     # ── 上游服务地址 ─────────────────────────────────────
-    mineru_base_url: str = "http://127.0.0.1:8000"
-    qwen_base_url: str = "http://127.0.0.1:8001"        # vLLM OpenAI 兼容端口
-    qwen_model_id: str = "/home/tff/software/models/Qwen2.5-VL-7B-Instruct-AWQ"
+    mineru_base_url: str = "http://127.0.0.1:16581"     # MinerU 4.0 doclib API
+    mineru_ocr_mode: str = "auto"                        # auto | ocr | no-ocr
+    qwen_base_url: str = "http://127.0.0.1:8001"         # vLLM OpenAI 兼容端口
+    qwen_model_name: str = "qwen2.5-vl"                  # vllm serve --served-model-name
 
     # ── 存储路径 ─────────────────────────────────────────
     storage_root: Path = Path(__file__).parent.parent / "storage"
@@ -29,6 +30,14 @@ class Settings(BaseSettings):
     def assets_dir(self) -> Path:
         return self.storage_root / "assets"
 
+    @property
+    def tasks_dir(self) -> Path:
+        return self.storage_root / "tasks"
+
+    @property
+    def runs_dir(self) -> Path:
+        return self.storage_root / "runs"
+
     # ── 推理参数 ─────────────────────────────────────────
     # vLLM guided_json 约束解码，保证 100% 合法 JSON
     qwen_max_tokens: int = 2048
@@ -41,6 +50,11 @@ class Settings(BaseSettings):
     # ROI block 筛选 IoU 阈值
     roi_iou_threshold: float = 0.5
 
+    # ── 异步任务 ─────────────────────────────────────────
+    mineru_job_timeout: int = 180        # MinerU 解析任务最长等待（秒）
+    mineru_poll_interval: float = 2.0    # MinerU 任务轮询间隔（秒）
+    task_timeout: int = 300              # 任务超过该时长视为僵死（启动时清扫）
+
     # ── 调试 ─────────────────────────────────────────────
     debug: bool = True                   # True 时打印原始 MinerU / Qwen 响应
 
@@ -52,5 +66,6 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # 启动时确保目录存在
-for _d in (settings.originals_dir, settings.rois_dir, settings.assets_dir):
+for _d in (settings.originals_dir, settings.rois_dir, settings.assets_dir,
+           settings.tasks_dir, settings.runs_dir):
     _d.mkdir(parents=True, exist_ok=True)

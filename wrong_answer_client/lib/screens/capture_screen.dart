@@ -112,7 +112,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
     await _uploadImage();
   }
 
-  // ── Stage 1: 上传 ─────────────────────────────────────────────────────────
+  // ── Stage 1: 上传 + 全页解析（异步任务轮询）──────────────────────────────
   Future<void> _uploadImage() async {
     if (_imageFile == null) return;
     setState(() {
@@ -122,10 +122,11 @@ class _CaptureScreenState extends State<CaptureScreen> {
     });
 
     try {
-      final resp = await ApiClient.instance.uploadImage(
+      final resp = await ApiClient.instance.uploadAndParse(
         _imageFile!,
         onProgress: (sent, total) {
           if (total > 0) setState(() => _uploadProgress = sent / total);
+          if (sent == total) setState(() => _statusMsg = '版面分析中…');
         },
       );
 
@@ -155,7 +156,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
   }
 
   // ── Stage 2: ROI 确认后提取 ───────────────────────────────────────────────
-  Future<void> _onRoiConfirmed(List<double> roiBbox) async {
+  Future<void> _onRoiConfirmed(
+      List<double> roiBbox, List<double>? answerBbox) async {
     if (_uploadResp == null) return;
     setState(() {
       _stage = _Stage.extracting;
@@ -166,6 +168,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
       final record = await ApiClient.instance.extract(
         imageId: _uploadResp!.imageId,
         roiBbox: roiBbox,
+        answerBbox: answerBbox,
         onStageChange: (msg) => setState(() => _statusMsg = msg),
       );
       if (!mounted) return;

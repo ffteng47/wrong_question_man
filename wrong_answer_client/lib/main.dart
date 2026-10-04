@@ -2,10 +2,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'screens/home_screen.dart';
+import 'utils/server_config.dart';
 import 'utils/theme.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await ServerConfig.instance.loadAndApply();
   // 强制竖屏（试卷通常竖向拍摄）
   SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,

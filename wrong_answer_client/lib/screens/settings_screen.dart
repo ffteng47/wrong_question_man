@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../api/api_client.dart';
 import '../api/semec_teaching_api.dart';
 import '../services/sync_service.dart';
+import '../utils/server_config.dart';
 import '../utils/theme.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -13,8 +14,8 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  final _urlCtrl = TextEditingController(text: AppConst.baseUrl);
-  final _semecUrlCtrl = TextEditingController(text: SemecTeachingApi.instance.baseUrl);
+  final _urlCtrl = TextEditingController(text: ServerConfig.instance.apiBaseUrl);
+  final _semecUrlCtrl = TextEditingController(text: ServerConfig.instance.semecBaseUrl);
   final _semecUserCtrl = TextEditingController();
   final _semecPassCtrl = TextEditingController();
 
@@ -54,7 +55,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _testConnection() async {
     setState(() { _testing = true; _health = null; _error = null; });
     try {
-      ApiClient.instance.setBaseUrl(_urlCtrl.text.trim());
+      await ServerConfig.instance.setApiBaseUrl(_urlCtrl.text.trim());
       final h = await ApiClient.instance.health();
       if (mounted) setState(() { _health = h; _testing = false; });
     } catch (e) {
@@ -74,7 +75,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     setState(() { _semecLoggingIn = true; _semecError = null; });
 
     try {
-      SemecTeachingApi.instance.setBaseUrl(_semecUrlCtrl.text.trim());
+      await ServerConfig.instance.setSemecBaseUrl(_semecUrlCtrl.text.trim());
       final result = await SemecTeachingApi.instance.login(username, password);
 
       if (mounted) {

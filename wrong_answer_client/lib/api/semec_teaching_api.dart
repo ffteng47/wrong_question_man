@@ -3,12 +3,14 @@
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import '../models/paper_models.dart';
+import '../utils/server_config.dart';
 
 // ── 常量 ─────────────────────────────────────────────────────────────────────
-const String _kSemecBaseUrl = 'http://192.168.41.138:3000';
 const String _kJwtTokenKey = 'semec_access_token';
 const String _kCsrfTokenKey = 'semec_csrf_token';
 const String _kSemecUserKey = 'semec_user_json';
@@ -73,7 +75,7 @@ class SemecTeachingApi {
   late final Dio _dio;
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
 
-  String _baseUrl = _kSemecBaseUrl;
+  String _baseUrl = ServerConfig.instance.semecBaseUrl;
   String? _jwtToken;
   String? _csrfToken;
   SemecUser? _currentUser;
@@ -500,6 +502,85 @@ class SemecTeachingApi {
       print('[SEMEC] 获取班级树失败: $e');
       return [];
     }
+  }
+
+  // ── 纸面作业判题链路（exam-server /api/answer/*，学生端）─────────────────
+
+  /// 我的作业列表（GET /api/answer/papers/assignments）
+  Future<List<PaperAssignment>> getPaperAssignments() async {
+    final resp = await _dio.get('/api/answer/papers/assignments');
+    if (resp.statusCode == 200 && resp.data?['success'] == true) {
+      return (resp.data['data'] as List? ?? [])
+          .map((e) => PaperAssignment.fromJson(
+              Map<String, dynamic>.from(e)))
+          .toList();
+    }
+    throw Exception(resp.data?['message'] ?? '获取作业列表失败');
+  }
+
+  /// 创建上传任务（POST /api/answer/uploads，multipart 字段名 files）
+  Future<PaperUploadCreated> createPaperUpload(
+    List<File> files, {
+    int? assignId,
+    void Function(int sent, int total)? onProgress,
+  }) async {
+    final parts = <MultipartFile>[];
+    for (final f in files) {
+      parts.add(await MultipartFile.fromFile(
+        f.path,
+        filename: f.path.split(Platform.pathSeparator).last,
+      ));
+    }
+    final formData = FormData.fromMap({
+      'files': parts,
+      if (assignId != null) 'assign_id': '$assignId',
+    });
+
+    final resp = await _dio.post(
+      '/api/answer/uploads',
+      data: formData,
+      onSendProgress: onProgress,
+    );
+    if (resp.statusCode == 200 && resp.data?['success'] == true) {
+      return PaperUploadCreated.fromJson(
+          Map<String, dynamic>.from(resp.data!['data']));
+    }
+    throw Exception(resp.data?['message'] ?? '上传失败');
+  }
+
+  /// 我的上传任务列表（GET /api/answer/uploads）
+  Future<List<PaperUploadRow>> listPaperUploads({int page = 1}) async {
+    final resp = await _dio.get('/api/answer/uploads',
+        queryParameters: {'page': page});
+    if (resp.statusCode == 200 && resp.data?['success'] == true) {
+      final data = resp.data!['data'];
+      return (data['list'] as List? ?? [])
+          .map((e) => PaperUploadRow.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
+    }
+    throw Exception(resp.data?['message'] ?? '获取任务列表失败');
+  }
+
+  /// 单个上传任务详情（含 pages + results，GET /api/answer/uploads/:id）
+  Future<PaperUploadDetail> getPaperUpload(int uploadId) async {
+    final resp = await _dio.get('/api/answer/uploads/$uploadId');
+    if (resp.statusCode == 200 && resp.data?['success'] == true) {
+      return PaperUploadDetail.fromJson(
+          Map<String, dynamic>.from(resp.data!['data']));
+    }
+    throw Exception(resp.data?['message'] ?? '获取任务详情失败');
+  }
+
+  /// 页原图字节（GET /api/answer/pages/:pageId/image，带 JWT+CSRF Cookie）
+  Future<Uint8List> fetchPaperPageImage(int pageId) async {
+    final resp = await _dio.get(
+      '/api/answer/pages/$pageId/image',
+      options: Options(responseType: ResponseType.bytes),
+    );
+    if (resp.statusCode == 200) {
+      return resp.data as Uint8List;
+    }
+    throw Exception('获取页图片失败: HTTP ${resp.statusCode}');
   }
 
   // ── 工具方法 ──────────────────────────────────────────────────────────────

@@ -1,25 +1,32 @@
 """
-MinerU API 客户端
-- 调用 mineru-api 官方 FastAPI（POST /file_parse）
-- 解析返回的 content_list
-- 提供 IoU 筛选 ROI 内的 blocks
+MinerU 4.0 doclib API 客户端
+工作流：POST /v1/uploads → PUT upload_url → POST /v1/uploads/{id}/complete
+        → POST /v1/parse/jobs → 轮询 GET /v1/parse/jobs/{job_id}
+        → GET /v1/files/{file_id}/content (middle_json, docvortex.middle v2.0)
+bbox 为 0~1 归一化坐标，×1000 后与本系统 0~1000 约定一致。
 """
 from __future__ import annotations
+import asyncio
+import hashlib
 import httpx
 import json
 import logging
+import mimetypes
+import time
 from pathlib import Path
+
 from app.config import settings
 from app.models.schema import ContentBlock
 
 logger = logging.getLogger(__name__)
 
-# MinerU API 超时（大图解析可能需要 5-10s）
-_TIMEOUT = httpx.Timeout(180.0, connect=10.0)
+_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+
+_TERMINAL = ("completed", "partial", "failed", "canceled")
 
 
 def _map_mineru_type(mineru_type: str) -> str:
-    """将 MinerU content_list 的 type 映射到 ContentBlock 的 type"""
+    """docvortex block type → ContentBlock type"""
     mapping = {
         "text": "text",
         "title": "title",
@@ -28,92 +35,125 @@ def _map_mineru_type(mineru_type: str) -> str:
         "table": "table",
         "equation": "formula",
         "formula": "formula",
-        "interline_equation": "formula",
-        "inline_equation": "formula",
     }
     return mapping.get(mineru_type, "text")
 
 
 async def parse_image(image_path: Path) -> tuple[list[ContentBlock], float]:
     """
-    调用 MinerU 官方 /file_parse 解析单张图片。
-    返回 (content_blocks, min_confidence)。
+    调用 MinerU 4.0 解析单张图片，返回 (content_blocks, min_confidence)。
+    blocks 的 bbox 已映射到 0~1000 坐标系。
+    middle_json 不含置信度信息，min_confidence 恒为 1.0。
     """
+    t0 = time.perf_counter()
+    data = image_path.read_bytes()
+    sha = hashlib.sha256(data).hexdigest()
+    mime = mimetypes.guess_type(image_path.name)[0] or "application/octet-stream"
+
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        with open(image_path, "rb") as f:
-            resp = await client.post(
-                f"{settings.mineru_base_url}/file_parse",
-                files={
-                    "files": (
-                        image_path.name,
-                        f,
-                        "application/octet-stream",
-                    )
-                },
-                data={
-                    "return_md": "false",
-                    "return_content_list": "true",
-                    "return_images": "false",
-                    "response_format_zip": "false",
-                    "backend": "pipeline",
-                    "parse_method": "ocr",
-                },
-            )
-        resp.raise_for_status()
-        data = resp.json()
-    logger.info(f"miner original response: {data}")
-    if settings.debug:
-        logger.debug(f"[MinerU raw] keys={list(data.keys())}")
+        # 1. 申请上传
+        up = (await client.post(
+            f"{settings.mineru_base_url}/v1/uploads",
+            json={"filename": image_path.name, "bytes": len(data),
+                  "mime_type": mime, "purpose": "parse"},
+        )).raise_for_status().json()
 
-    # ── 解析 results ─────────────────────────────────────────────────────────
-    results = data.get("results", {})
-    if not results:
-        logger.warning("MinerU /file_parse 返回空 results")
-        return [], 1.0
+        # 2. 上传内容
+        put_resp = await client.put(up["upload_url"], content=data,
+                                    headers={"Content-Type": "application/octet-stream"})
+        put_resp.raise_for_status()
 
-    # 取第一个（也是唯一一个）文件的结果
-    file_result = next(iter(results.values()))
+        # 3. 完成上传 → file_id
+        done = (await client.post(
+            f"{settings.mineru_base_url}/v1/uploads/{up['id']}/complete",
+            json={"sha256sum": sha},
+        )).raise_for_status().json()
+        file_id = done["file"]["id"]
 
-    # content_list 是 JSON 字符串
-    content_list_raw = file_result.get("content_list", "[]")
-    if isinstance(content_list_raw, str):
-        raw_blocks: list[dict] = json.loads(content_list_raw)
-    else:
-        raw_blocks = content_list_raw
+        # 4. 创建解析任务
+        job = (await client.post(
+            f"{settings.mineru_base_url}/v1/parse/jobs",
+            json={
+                "files": [{"source": {"type": "file_id", "file_id": file_id}}],
+                "output_formats": ["middle_json"],
+                "ocr_mode": settings.mineru_ocr_mode,
+            },
+        )).raise_for_status().json()
+        job_id = job["job_id"]
 
+        # 5. 轮询任务状态
+        deadline = time.monotonic() + settings.mineru_job_timeout
+        while True:
+            job = (await client.get(
+                f"{settings.mineru_base_url}/v1/parse/jobs/{job_id}"
+            )).raise_for_status().json()
+            if job["status"] in _TERMINAL:
+                break
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"MinerU 解析超时: job={job_id} status={job['status']}")
+            await asyncio.sleep(settings.mineru_poll_interval)
+
+        if job["status"] in ("failed", "canceled"):
+            raise RuntimeError(f"MinerU 解析失败: {json.dumps(job, ensure_ascii=False)[:500]}")
+
+        # 6. 拉取 middle_json
+        middle_fid = job["files"][0]["output_files"]["middle_json"]["file_id"]
+        middle = (await client.get(
+            f"{settings.mineru_base_url}/v1/files/{middle_fid}/content"
+        )).raise_for_status().json()
+
+    blocks = _middle_to_blocks(middle)
+    elapsed = int((time.perf_counter() - t0) * 1000)
+    logger.info(f"MinerU 解析完成: {len(blocks)} blocks, {elapsed}ms, status={job['status']}")
+    return blocks, 1.0
+
+
+def _flatten_content(content) -> str:
+    """block.content 可能是字符串，也可能是 span 列表（如 [{'type':'text','content':…}]）"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for span in content:
+            if isinstance(span, dict):
+                v = span.get("content") or span.get("text") or span.get("html") or ""
+                parts.append(_flatten_content(v))
+            elif isinstance(span, str):
+                parts.append(span)
+        return "".join(parts)
+    return ""
+
+
+def _middle_to_blocks(middle: dict) -> list[ContentBlock]:
+    """docvortex.middle v2.0 → ContentBlock 列表（bbox 0~1 → 0~1000）"""
     blocks: list[ContentBlock] = []
-    for i, blk in enumerate(raw_blocks):
-        # MinerU content_list 格式：
-        # { "type": "text", "text": "...", "page_idx": 0, "bbox": [x1, y1, x2, y2] }
-        bbox = blk.get("bbox", [])
-        if isinstance(bbox, list) and len(bbox) >= 4:
-            bbox = [float(v) for v in bbox[:4]]
-        else:
-            bbox = []
+    i = 0
+    for page in middle.get("pages", []):
+        for blk in page.get("blocks", []):
+            raw_bbox = blk.get("bbox") or []
+            bbox = [float(v) * 1000 for v in raw_bbox[:4]] if len(raw_bbox) >= 4 else []
+            blk_type = _map_mineru_type(blk.get("type", "text"))
+            content = _flatten_content(blk.get("content"))
+            blocks.append(ContentBlock(
+                id=f"blk_{i}",
+                type=blk_type,
+                content=content,
+                bbox=bbox,
+                latex=content if blk_type == "formula" else None,
+                asset_path=None,
+                score=None,
+            ))
+            i += 1
+    return blocks
 
-        content = blk.get("text", blk.get("content", ""))
-        blk_type = _map_mineru_type(blk.get("type", "text"))
 
-        # equation 类型的 content 可能是 LaTeX
-        latex = content if blk_type == "formula" else None
-
-        # figure/image 类型的 img_path 需要提取为 asset_path
-        img_path = blk.get("img_path") or blk.get("image_path")
-
-        blocks.append(ContentBlock(
-            id=f"blk_{i}",
-            type=blk_type,
-            content=content,
-            bbox=bbox,
-            latex=latex,
-            asset_path=img_path,
-            score=None,  # content_list 中没有置信度
-        ))
-
-    # content_list 中没有全局置信度，返回默认值
-    min_conf = 1.0
-    logger.info(f"MinerU 解析完成: {len(blocks)} blocks, min_conf={min_conf:.3f}")
-    return blocks, min_conf
+async def check_healthy() -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+            r = await client.get(f"{settings.mineru_base_url}/v1/health")
+            return r.status_code == 200
+    except Exception:
+        return False
 
 
 def filter_blocks_by_roi(
@@ -122,7 +162,7 @@ def filter_blocks_by_roi(
     iou_threshold: float | None = None,
 ) -> list[ContentBlock]:
     """
-    筛选与 ROI 重叠的 blocks（IoU > threshold）。
+    筛选与 ROI 重叠的 blocks（IoB > threshold）。
     同时自动向上注入最近的 title/大题 block 作为上下文。
     """
     threshold = iou_threshold or settings.roi_iou_threshold
@@ -138,8 +178,8 @@ def filter_blocks_by_roi(
         if not blk.bbox or len(blk.bbox) < 4:
             continue
 
-        iou = _iob(blk.bbox, roi)
-        if iou >= threshold:
+        iob = _iob(blk.bbox, roi)
+        if iob >= threshold:
             filtered.append(blk)
 
     # 如果 ROI 内没有 title block 但找到了 last_title，注入作为大题上下文
@@ -167,8 +207,7 @@ def blocks_to_text(blocks: list[ContentBlock]) -> str:
 
 def _iob(a: list[float], b: list[float]) -> float:
     """
-    计算 Intersection over Block（交集 / block 自身面积）。
-    bbox 格式 [x1, y1, x2, y2]，a 为 block，b 为 ROI。
+    计算 Intersection over Block（交集 / block 自身面积），bbox 格式 [x1,y1,x2,y2]。
 
     用 IoB 而非 IoU 的原因：ROI 通常远大于单个 block，
     若用 IoU（交集/并集）则即使 block 完全在 ROI 内，
@@ -187,27 +226,6 @@ def _iob(a: list[float], b: list[float]) -> float:
     inter_h = max(0.0, inter_y2 - inter_y1)
     inter_area = inter_w * inter_h
 
-    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)  # block 自身面积
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
 
     return inter_area / area_a if area_a > 0 else 0.0
-
-
-def _iou(a: list[float], b: list[float]) -> float:
-    """计算两个 bbox 的 IoU，bbox 格式 [x1, y1, x2, y2]（保留备用）"""
-    ax1, ay1, ax2, ay2 = a[:4]
-    bx1, by1, bx2, by2 = b[:4]
-
-    inter_x1 = max(ax1, bx1)
-    inter_y1 = max(ay1, by1)
-    inter_x2 = min(ax2, bx2)
-    inter_y2 = min(ay2, by2)
-
-    inter_w = max(0.0, inter_x2 - inter_x1)
-    inter_h = max(0.0, inter_y2 - inter_y1)
-    inter_area = inter_w * inter_h
-
-    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
-    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
-    union = area_a + area_b - inter_area
-
-    return inter_area / union if union > 0 else 0.0

@@ -147,8 +147,6 @@ class AppText {
 
 // ── 常量 ─────────────────────────────────────────────────────────────────────
 class AppConst {
-  static const baseUrl = 'http://192.168.41.177:9000'; // ← FastAPI 中间层端口
-
   static const reviewLabels = {
     'pending':   '待复习',
     'reviewing': '复习中',

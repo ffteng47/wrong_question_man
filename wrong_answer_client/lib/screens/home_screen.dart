@@ -10,6 +10,8 @@ import '../widgets/record_card.dart';
 import 'assign_student_screen.dart';
 import 'capture_screen.dart';
 import 'detail_screen.dart';
+import 'paper_pick_screen.dart';
+import 'paper_task_list_screen.dart';
 import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -51,10 +53,6 @@ class _HomeScreenState extends State<HomeScreen> {
             const SnackBar(
               content: Text('未登录 semecTeaching，部分功能（如分配学生）需要登录后才能使用'),
               duration: Duration(seconds: 5),
-              action: SnackBarAction(
-                label: '去登录',
-                onPressed: null, // 由设置页面处理登录
-              ),
             ),
           );
         }
@@ -87,6 +85,15 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('错题本'),
         actions: [
+          // 学生：判题任务列表入口
+          if (SyncService.instance.currentUser?.role == 'student')
+            IconButton(
+              icon: const Icon(Icons.assignment_outlined),
+              onPressed: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) =>
+                      const PaperTaskListScreen())),
+              tooltip: '作业任务',
+            ),
           IconButton(
             icon: const Icon(Icons.tune_outlined),
             onPressed: _showFilterSheet,
@@ -182,6 +189,21 @@ class _HomeScreenState extends State<HomeScreen> {
                   style: const TextStyle(fontWeight: FontWeight.w600)),
             ),
           const SizedBox(height: 12),
+          // 学生：纸面作业链路入口（与错题录入并列的第二入口）
+          if (SyncService.instance.currentUser?.role == 'student') ...[
+            FloatingActionButton.extended(
+              heroTag: 'paper',
+              onPressed: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) =>
+                      const PaperPickScreen())),
+              backgroundColor: AppColors.green,
+              foregroundColor: AppColors.bg0,
+              icon: const Icon(Icons.document_scanner_outlined),
+              label: const Text('纸面作业',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+            ),
+            const SizedBox(height: 12),
+          ],
           FloatingActionButton.extended(
             heroTag: 'add',
             onPressed: () async {

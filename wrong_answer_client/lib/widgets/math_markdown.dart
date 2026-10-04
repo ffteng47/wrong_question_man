@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
 import 'package:markdown/markdown.dart' as md;
+import '../utils/server_config.dart';
 import '../utils/theme.dart';
 
 class MathMarkdown extends StatelessWidget {
@@ -103,7 +104,7 @@ class _MathMarkdownBody extends StatelessWidget {
     final path = uri.toString();
     final url = path.startsWith('http')
         ? path
-        : '${AppConst.baseUrl}/static/$path';
+        : '${ServerConfig.instance.apiBaseUrl}/static/$path';
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: ClipRRect(
