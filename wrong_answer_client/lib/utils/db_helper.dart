@@ -17,10 +17,11 @@ class DbHelper {
     final dbPath = join(await getDatabasesPath(), 'wrong_answer.db');
     return openDatabase(
       dbPath,
-      version: 3,
+      version: 4,
       onCreate: (db, version) async {
         await _createRecordsTable(db);
         await _createDraftTable(db);
+        await _createPendingUploadsTable(db);
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -31,6 +32,9 @@ class DbHelper {
           await db.execute('ALTER TABLE records ADD COLUMN assigned_to_student_name TEXT');
           await db.execute('ALTER TABLE records ADD COLUMN keep_in_teacher_collection INTEGER DEFAULT 1');
           await db.execute('ALTER TABLE records ADD COLUMN assign_status TEXT');
+        }
+        if (oldVersion < 4) {
+          await _createPendingUploadsTable(db);
         }
       },
     );
@@ -83,6 +87,18 @@ class DbHelper {
     ''');
     await db.execute(
       'CREATE INDEX IF NOT EXISTS idx_draft_status ON draft_tasks(status)');
+  }
+
+  Future<void> _createPendingUploadsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS paper_pending_uploads (
+        upload_id   INTEGER PRIMARY KEY,
+        upload_no   TEXT,
+        assign_id   INTEGER,
+        status      TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+      )
+    ''');
   }
 
   // ── 写入/更新 ─────────────────────────────────────────────────────────────
@@ -176,6 +192,37 @@ class DbHelper {
   Future<void> delete(String id) async {
     final d = await db;
     await d.delete('records', where: 'id = ?', whereArgs: [id]);
+  }
+
+  // ── 待处理上传（上传中离开可恢复）────────────────────────────────────────
+  /// 插入或续保活；ON CONFLICT 只更新状态，保留 created_at
+  Future<void> upsertPendingUpload({
+    required int uploadId,
+    String? uploadNo,
+    int? assignId,
+    required String status,
+  }) async {
+    final d = await db;
+    await d.rawInsert('''
+      INSERT INTO paper_pending_uploads(upload_id, upload_no, assign_id, status, created_at)
+      VALUES(?, ?, ?, ?, ?)
+      ON CONFLICT(upload_id) DO UPDATE SET
+        status    = excluded.status,
+        upload_no = COALESCE(excluded.upload_no, paper_pending_uploads.upload_no),
+        assign_id = COALESCE(excluded.assign_id, paper_pending_uploads.assign_id)
+    ''', [uploadId, uploadNo, assignId, status,
+          DateTime.now().toUtc().toIso8601String()]);
+  }
+
+  Future<List<Map<String, dynamic>>> listPendingUploads() async {
+    final d = await db;
+    return d.query('paper_pending_uploads', orderBy: 'created_at DESC');
+  }
+
+  Future<void> deletePendingUpload(int uploadId) async {
+    final d = await db;
+    await d.delete('paper_pending_uploads',
+        where: 'upload_id = ?', whereArgs: [uploadId]);
   }
 
   // ── 统计 ──────────────────────────────────────────────────────────────────

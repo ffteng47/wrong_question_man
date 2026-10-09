@@ -6,6 +6,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
+import 'package:http_parser/http_parser.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../models/paper_models.dart';
 import '../utils/server_config.dart';
@@ -571,16 +572,62 @@ class SemecTeachingApi {
     throw Exception(resp.data?['message'] ?? '获取任务详情失败');
   }
 
-  /// 页原图字节（GET /api/answer/pages/:pageId/image，带 JWT+CSRF Cookie）
-  Future<Uint8List> fetchPaperPageImage(int pageId) async {
+  /// 页图字节（GET /api/answer/pages/:pageId/image?type=original|normalized）
+  /// normalized=批改标注图（坐标基准），original=学生原图
+  Future<Uint8List> fetchPaperPageImage(int pageId,
+      {String type = 'normalized'}) async {
     final resp = await _dio.get(
       '/api/answer/pages/$pageId/image',
+      queryParameters: {'type': type},
       options: Options(responseType: ResponseType.bytes),
     );
     if (resp.statusCode == 200) {
       return resp.data as Uint8List;
     }
     throw Exception('获取页图片失败: HTTP ${resp.statusCode}');
+  }
+
+  /// 订正历史（GET /api/answer/results/:id/corrections，当前轮在前）
+  Future<List<PaperCorrection>> getPaperCorrections(int resultId) async {
+    final resp = await _dio.get('/api/answer/results/$resultId/corrections');
+    if (resp.statusCode == 200 && resp.data?['success'] == true) {
+      return (resp.data['data'] as List? ?? [])
+          .map((e) => PaperCorrection.fromJson(
+              Map<String, dynamic>.from(e)))
+          .toList();
+    }
+    throw Exception(resp.data?['message'] ?? '获取订正记录失败');
+  }
+
+  /// 拍照订正（multipart POST 同 URL：file + error_tag_ids JSON 串）
+  Future<CorrectionSubmitResult> submitPhotoPaperCorrection(
+    int resultId,
+    File file, {
+    List<int> errorTagIds = const [],
+  }) async {
+    // 后端 correctionUpload 只收 image/*，按扩展名给准 MIME，避免落成 octet-stream
+    final p = file.path.toLowerCase();
+    final subtype = p.endsWith('.png') ? 'png'
+        : p.endsWith('.webp') ? 'webp'
+        : p.endsWith('.gif') ? 'gif' : 'jpeg';
+    final formData = FormData.fromMap({
+      'file': await MultipartFile.fromFile(
+        file.path,
+        filename: file.path.split(Platform.pathSeparator).last,
+        contentType: MediaType('image', subtype),
+      ),
+      if (errorTagIds.isNotEmpty)
+        'error_tag_ids': jsonEncode(errorTagIds),
+    });
+    final resp = await _dio.post(
+      '/api/answer/results/$resultId/corrections',
+      data: formData,
+    );
+    if (resp.statusCode == 200 && resp.data?['success'] == true) {
+      return CorrectionSubmitResult.fromJson(
+          Map<String, dynamic>.from(resp.data!['data']));
+    }
+    throw Exception(resp.data?['message'] ?? '订正提交失败');
   }
 
   // ── 工具方法 ──────────────────────────────────────────────────────────────

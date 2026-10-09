@@ -174,11 +174,12 @@ class PaperResult {
     );
   }
 
+  /// 对齐 Web GRADE_LABELS：符号化三态 + 老师正在批改
   String get gradeLabel => switch (grade) {
-    'correct' => '正确',
-    'wrong' => '错误',
-    'partial' => '部分正确',
-    _ => '需老师确认',
+    'correct' => '✓ 正确',
+    'wrong' => '✕ 未正确',
+    'partial' => '△ 部分正确',
+    _ => '老师正在批改',
   };
 
   /// 0~1000 → 百分比定位（left/top/width/height，0~1）
@@ -187,6 +188,106 @@ class PaperResult {
     if (r == null) return null;
     return Rect.fromLTRB(r[0] / 1000, r[1] / 1000, r[2] / 1000, r[3] / 1000);
   }
+}
+
+/// 错因标签（白名单与后端 paperCorrectionService.ERROR_TAG_WHITELIST 一致）
+class ErrorTag {
+  final int id;
+  final String name;
+  const ErrorTag(this.id, this.name);
+}
+
+const kPaperErrorTags = <ErrorTag>[
+  ErrorTag(1, '计算错误'),
+  ErrorTag(2, '概念混淆'),
+  ErrorTag(3, '公式记错'),
+  ErrorTag(4, '审题不清'),
+  ErrorTag(5, '步骤遗漏'),
+  ErrorTag(7, '单位错误'),
+  ErrorTag(9, '符号错误'),
+  ErrorTag(10, '抄写错误'),
+  ErrorTag(12, '方法不对'),
+];
+
+/// 订正历史行（GET listRevisions，snake_case；当前轮在前）
+class PaperCorrection {
+  final int id;
+  final int roundNo;
+  final String channel; // online | photo
+  final String? recognizedText;
+  final String? gradingResult; // correct | wrong | partial | grading_uncertain ...
+  final String? gradingFeedback;
+  final String? gradingReason;
+  final String status; // done | needs_teacher | confirmed
+
+  PaperCorrection({
+    required this.id,
+    required this.roundNo,
+    required this.channel,
+    this.recognizedText,
+    this.gradingResult,
+    this.gradingFeedback,
+    this.gradingReason,
+    required this.status,
+  });
+
+  factory PaperCorrection.fromJson(Map<String, dynamic> j) => PaperCorrection(
+    id: (j['id'] as num?)?.toInt() ?? 0,
+    roundNo: (j['round_no'] as num?)?.toInt() ?? 0,
+    channel: j['channel']?.toString() ?? 'online',
+    recognizedText: j['recognized_text'] as String?,
+    gradingResult: j['grading_result'] as String?,
+    gradingFeedback: j['grading_feedback'] as String?,
+    gradingReason: j['grading_reason'] as String?,
+    status: j['status']?.toString() ?? '',
+  );
+
+  /// 状态文案，对齐 Web correctionLabel
+  String get label {
+    if (status == 'needs_teacher') return '老师复核中';
+    const base = {
+      'correct': '✓ 正确',
+      'wrong': '✕ 未正确',
+      'partial': '△ 部分正确',
+    };
+    final b = base[gradingResult] ?? '待复核';
+    return status == 'confirmed' ? '$b（老师已复核）' : b;
+  }
+}
+
+/// 订正提交结果（POST，camelCase）
+class CorrectionSubmitResult {
+  final int revisionId;
+  final int roundNo;
+  final String gradingResult;
+  final double? score;
+  final String? feedback;
+  final String? reason;
+  final String status; // done | needs_teacher
+  final String? recognizedText;
+
+  CorrectionSubmitResult({
+    required this.revisionId,
+    required this.roundNo,
+    required this.gradingResult,
+    this.score,
+    this.feedback,
+    this.reason,
+    required this.status,
+    this.recognizedText,
+  });
+
+  factory CorrectionSubmitResult.fromJson(Map<String, dynamic> j) =>
+      CorrectionSubmitResult(
+        revisionId: (j['revisionId'] as num?)?.toInt() ?? 0,
+        roundNo: (j['roundNo'] as num?)?.toInt() ?? 0,
+        gradingResult: j['gradingResult']?.toString() ?? '',
+        score: (j['score'] as num?)?.toDouble(),
+        feedback: j['feedback'] as String?,
+        reason: j['reason'] as String?,
+        status: j['status']?.toString() ?? '',
+        recognizedText: j['recognizedText'] as String?,
+      );
 }
 
 class PaperUploadDetail {

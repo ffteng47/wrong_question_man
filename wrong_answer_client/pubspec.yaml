@@ -12,6 +12,7 @@ dependencies:
 
   # 网络
   dio: ^5.4.3
+  http_parser: ^4.0.2
   # 本地存储
   sqflite: ^2.3.3
   path_provider: ^2.1.3

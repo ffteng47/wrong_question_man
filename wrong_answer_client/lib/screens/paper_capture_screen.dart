@@ -7,6 +7,7 @@ import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 import '../api/semec_teaching_api.dart';
 import '../models/paper_models.dart';
+import '../utils/db_helper.dart';
 import '../utils/theme.dart';
 import 'paper_result_screen.dart';
 
@@ -81,6 +82,13 @@ class _PaperCaptureScreenState extends State<PaperCaptureScreen> {
         onProgress: (sent, total) {
           if (total > 0) setState(() => _progress = sent / total);
         },
+      );
+      // 关键：先落本地再判 mounted——上传后立即离开也能恢复任务
+      await DbHelper.instance.upsertPendingUpload(
+        uploadId: created.uploadId,
+        uploadNo: created.uploadNo,
+        assignId: widget.assignment?.assignId,
+        status: created.status,
       );
       if (!mounted) return;
       // 进入任务详情页，返回时通知上层刷新作业列表

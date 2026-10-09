@@ -3,8 +3,11 @@
 import 'package:flutter/material.dart';
 import '../api/semec_teaching_api.dart';
 import '../models/paper_models.dart';
+import '../utils/db_helper.dart';
 import '../utils/theme.dart';
 import 'paper_capture_screen.dart';
+import 'paper_result_screen.dart';
+import 'paper_task_list_screen.dart';
 
 class PaperPickScreen extends StatefulWidget {
   const PaperPickScreen({super.key});
@@ -15,6 +18,7 @@ class PaperPickScreen extends StatefulWidget {
 
 class _PaperPickScreenState extends State<PaperPickScreen> {
   List<PaperAssignment> _assignments = [];
+  List<Map<String, dynamic>> _pending = [];
   bool _loading = true;
   String? _error;
 
@@ -28,17 +32,72 @@ class _PaperPickScreenState extends State<PaperPickScreen> {
     setState(() { _loading = true; _error = null; });
     try {
       final list = await SemecTeachingApi.instance.getPaperAssignments();
-      if (mounted) setState(() { _assignments = list; _loading = false; });
+      var pending = await DbHelper.instance.listPendingUploads();
+      pending = await _reconcilePending(pending);
+      if (mounted) {
+        setState(() {
+          _assignments = list;
+          _pending = pending;
+          _loading = false;
+        });
+      }
     } catch (e) {
       if (mounted) setState(() { _error = e.toString(); _loading = false; });
     }
   }
 
+  /// 用服务端任务列表对账本地 pending：命中且终态→删；命中且非终态→刷新状态。
+  /// ponytail: 列表接口仅回最近 20 条，未命中不代表不存在，故保留本地记录
+  Future<List<Map<String, dynamic>>> _reconcilePending(
+      List<Map<String, dynamic>> pending) async {
+    if (pending.isEmpty) return pending;
+    Map<int, PaperUploadRow> byId;
+    try {
+      final rows = await SemecTeachingApi.instance.listPaperUploads();
+      byId = {for (final r in rows) r.id: r};
+    } catch (_) {
+      return pending; // 离线/请求失败：维持本地
+    }
+    final result = <Map<String, dynamic>>[];
+    for (final p in pending) {
+      final id = p['upload_id'] as int?;
+      if (id == null) { result.add(p); continue; }
+      final server = byId[id];
+      if (server != null) {
+        if (server.isTerminal) {
+          await DbHelper.instance.deletePendingUpload(id);
+          continue;
+        }
+        await DbHelper.instance.upsertPendingUpload(
+            uploadId: id, status: server.status);
+        result.add({...p, 'status': server.status});
+      } else {
+        result.add(p);
+      }
+    }
+    return result;
+  }
+
   Future<void> _go({PaperAssignment? assignment}) async {
-    final submitted = await Navigator.push<bool>(context,
+    await Navigator.push(context,
       MaterialPageRoute(builder: (_) =>
           PaperCaptureScreen(assignment: assignment)));
-    if (submitted == true) _load();
+    if (mounted) _load();
+  }
+
+  /// 作业卡：有处理中任务→直达结果页，否则→去拍照上传
+  void _openAssignment(PaperAssignment a) {
+    final matches =
+        _pending.where((p) => p['assign_id'] == a.assignId).toList();
+    if (matches.isNotEmpty) {
+      final p = matches.first;
+      Navigator.push(context, MaterialPageRoute(builder: (_) => PaperResultScreen(
+        uploadId: p['upload_id'] as int,
+        uploadNo: p['upload_no'] as String?,
+      )));
+    } else {
+      _go(assignment: a);
+    }
   }
 
   @override
@@ -89,6 +148,39 @@ class _PaperPickScreenState extends State<PaperPickScreen> {
                 borderRadius: BorderRadius.circular(10)),
           ),
         ),
+        if (_pending.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          Material(
+            color: AppColors.amber.withOpacity(0.12),
+            borderRadius: BorderRadius.circular(10),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => Navigator.push(context, MaterialPageRoute(
+                  builder: (_) => const PaperTaskListScreen())),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10),
+                  border:
+                      Border.all(color: AppColors.amber.withOpacity(0.5)),
+                ),
+                child: Row(children: [
+                  const Icon(Icons.watch_later_outlined,
+                      size: 18, color: AppColors.amber),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text('未完成上传（${_pending.length}）',
+                      style: const TextStyle(
+                          color: AppColors.amber,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600))),
+                  const Icon(Icons.chevron_right,
+                      size: 18, color: AppColors.amber),
+                ]),
+              ),
+            ),
+          ),
+        ],
         const SizedBox(height: 20),
         const Text('我的作业', style: AppText.label),
         const SizedBox(height: 8),
@@ -105,7 +197,7 @@ class _PaperPickScreenState extends State<PaperPickScreen> {
             borderRadius: BorderRadius.circular(10),
             child: InkWell(
               borderRadius: BorderRadius.circular(10),
-              onTap: () => _go(assignment: a),
+              onTap: () => _openAssignment(a),
               child: Container(
                 padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
@@ -142,6 +234,19 @@ class _PaperPickScreenState extends State<PaperPickScreen> {
                         ],
                       ),
                     ),
+                    if (_pending.any((p) => p['assign_id'] == a.assignId))
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppColors.amber.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text('处理中',
+                            style: TextStyle(
+                                color: AppColors.amber, fontSize: 11,
+                                fontWeight: FontWeight.w600)),
+                      ),
                     if (a.uploadCount > 0)
                       Container(
                         padding: const EdgeInsets.symmetric(
