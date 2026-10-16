@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'screens/home_screen.dart';
+import 'utils/app_navigator.dart';
 import 'utils/server_config.dart';
 import 'utils/theme.dart';
 
@@ -29,6 +30,7 @@ class WrongAnswerApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: '错题本',
+      navigatorKey: appNavigatorKey,
       theme: buildAppTheme(),
       debugShowCheckedModeBanner: false,
       home: const HomeScreen(),

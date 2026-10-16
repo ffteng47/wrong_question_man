@@ -14,6 +14,9 @@ class PaperTaskListScreen extends StatefulWidget {
   State<PaperTaskListScreen> createState() => _PaperTaskListScreenState();
 }
 
+/// 内存缓存：从详情返回/再次进入时秒开，后台静默刷新
+List<PaperUploadRow>? _taskListCache;
+
 class _PaperTaskListScreenState extends State<PaperTaskListScreen> {
   List<PaperUploadRow> _rows = [];
   bool _loading = true;
@@ -30,7 +33,13 @@ class _PaperTaskListScreenState extends State<PaperTaskListScreen> {
   @override
   void initState() {
     super.initState();
-    _load(initial: true);
+    if (_taskListCache != null) {
+      _rows = _taskListCache!;
+      _loading = false;
+      _load(); // 先秒开，后台静默刷新
+    } else {
+      _load(initial: true);
+    }
   }
 
   @override
@@ -39,9 +48,10 @@ class _PaperTaskListScreenState extends State<PaperTaskListScreen> {
     super.dispose();
   }
 
-  Future<void> _load({bool initial = false}) async {
+  Future<void> _load({bool initial = false, bool silent = false}) async {
     try {
       final list = await SemecTeachingApi.instance.listPaperUploads();
+      _taskListCache = list;
       if (!mounted) return;
       setState(() {
         _rows = list;
@@ -54,10 +64,12 @@ class _PaperTaskListScreenState extends State<PaperTaskListScreen> {
       }
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _loading = false;
-        if (initial) _error = e.toString();
-      });
+      // 静默/缓存场景失败：保留现有列表，不弹错误页
+      if (initial && _taskListCache == null) {
+        setState(() { _loading = false; _error = e.toString(); });
+      } else {
+        setState(() => _loading = false);
+      }
     }
   }
 
@@ -87,20 +99,43 @@ class _PaperTaskListScreenState extends State<PaperTaskListScreen> {
                     ? ListView(children: const [
                         SizedBox(height: 120),
                         Center(
-                          child: Text('还没有提交过纸面作业',
+                          child: Text('还没有提交过作业',
                               style: TextStyle(
                                   color: AppColors.textMuted, fontSize: 13)),
                         ),
                       ])
-                    : ListView.builder(
+                    : ListView(
                         physics: const AlwaysScrollableScrollPhysics(),
                         padding: const EdgeInsets.all(16),
-                        itemCount: _rows.length,
-                        itemBuilder: (_, i) => _rowCard(_rows[i]),
+                        children: [
+                          _buildHint(),
+                          ..._rows.map(_rowCard),
+                        ],
                       ),
       ),
     );
   }
+
+  /// 区分本页（自己的上传记录）与「我的作业」（老师布置的全部作业目录）
+  Widget _buildHint() => Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding:
+            const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: AppColors.bg1,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: AppColors.bg3),
+        ),
+        child: const Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Icon(Icons.info_outline, size: 15, color: AppColors.textMuted),
+          SizedBox(width: 8),
+          Expanded(child: Text(
+              '这里只列出你已上传过的作业记录；老师布置给你的全部作业（含未提交）'
+              '请回到「我的作业」查看。',
+              style: TextStyle(
+                  color: AppColors.textMuted, fontSize: 11.5, height: 1.45))),
+        ]),
+      );
 
   Widget _rowCard(PaperUploadRow r) {
     final color = _statusColor[r.status] ?? AppColors.textSecondary;
@@ -116,7 +151,7 @@ class _PaperTaskListScreenState extends State<PaperTaskListScreen> {
             await Navigator.push(context, MaterialPageRoute(
                 builder: (_) => PaperResultScreen(
                     uploadId: r.id, uploadNo: r.uploadNo)));
-            _load();
+            // 返回不重拉：30s 轮询 + 下拉刷新已覆盖状态变化
           },
           child: Container(
             padding: const EdgeInsets.all(14),

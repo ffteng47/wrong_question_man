@@ -11,10 +11,13 @@ pluginManagement {
     includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
 
     repositories {
+        // Aliyun 镜像优先：直连 mavenCentral/portal 在当前网络下会长时间挂起
+        maven { url = uri("https://maven.aliyun.com/repository/public") }
+        maven { url = uri("https://maven.aliyun.com/repository/google") }
+        maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
         google()
         gradlePluginPortal()
         mavenCentral()
-        maven { url = uri("https://maven.aliyun.com/repository/public") }
     }
 }
 

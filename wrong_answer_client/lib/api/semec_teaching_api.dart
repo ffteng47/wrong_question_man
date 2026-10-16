@@ -1,15 +1,20 @@
 // lib/api/semec_teaching_api.dart
 // 与 semecTeaching 后端通信（JWT + CSRF 保护）
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/material.dart';
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 import 'package:http_parser/http_parser.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../models/paper_models.dart';
+import '../utils/app_navigator.dart';
 import '../utils/server_config.dart';
+import '../utils/theme.dart';
+import '../screens/login_screen.dart';
 
 // ── 常量 ─────────────────────────────────────────────────────────────────────
 const String _kJwtTokenKey = 'semec_access_token';
@@ -50,7 +55,7 @@ class SemecLoginResult {
   final String? message;
   final SemecUser? user;
 
-  SemecLoginResult({required this.success, this.message, this.user});
+  const SemecLoginResult({required this.success, this.message, this.user});
 }
 
 class SemecUploadResult {
@@ -81,6 +86,12 @@ class SemecTeachingApi {
   String? _csrfToken;
   SemecUser? _currentUser;
 
+  /// 冷启动 token 读取完成信号：拦截登录前先 await，避免启动瞬间误判未登录
+  final Completer<void> tokensReady = Completer<void>();
+
+  /// 401 重新登录门：并发请求共享同一次登录流程，成功后由拦截器自动重放
+  Completer<bool>? _reloginGate;
+
   SemecTeachingApi._() {
     _dio = Dio(BaseOptions(
       baseUrl: _baseUrl,
@@ -108,14 +119,12 @@ class SemecTeachingApi {
 
         // 1. 附加 JWT Cookie（Dio 默认不自动携带）
         final jwt = _jwtToken ?? await _storage.read(key: _kJwtTokenKey);
-        print('[SEMEC_DEBUG] jwt is null: ${jwt == null}, length: ${jwt?.length ?? 0}');
         if (jwt != null) {
           cookies.add('access_token=$jwt');
         }
 
         // 2. 附加 CSRF Cookie（后端双提交模式需要）
         final csrf = _csrfToken ?? await _storage.read(key: _kCsrfTokenKey);
-        print('[SEMEC_DEBUG] csrf is null: ${csrf == null}, length: ${csrf?.length ?? 0}');
         if (csrf != null) {
           cookies.add('XSRF-TOKEN=$csrf');
           // 同时附加到 header（双提交模式）
@@ -125,23 +134,70 @@ class SemecTeachingApi {
         if (cookies.isNotEmpty) {
           options.headers['Cookie'] = cookies.join('; ');
         }
-        print('[SEMEC_DEBUG] cookies list: $cookies');
-        print('[SEMEC_DEBUG] Cookie header: ${options.headers['Cookie']}');
-        print('[SEMEC_DEBUG] x-xsrf-token header: ${options.headers['x-xsrf-token']}');
-        print('[SEMEC_DEBUG] all headers: ${options.headers}');
         handler.next(options);
       },
       onError: (error, handler) async {
-        if (error.response?.statusCode == 401 ||
-            error.response?.statusCode == 403) {
-          final errMsg = error.response?.data?['error']?.toString() ?? '';
-          if (errMsg.contains('token') || errMsg.contains('CSRF')) {
-            // Token 可能过期，清除本地 token
-            print('[SEMEC] Token 过期或无效，清除本地认证状态');
-            await clearTokens();
-          }
+        // 登录类接口的错误（如密码错误）由 login() 自行处理，不弹"过期"提示
+        if (error.requestOptions.path.startsWith('/api/auth/')) {
+          handler.next(error);
+          return;
         }
-        handler.next(error);
+
+        final status = error.response?.statusCode;
+        if (status == 401) {
+          // Token 过期：清登录态，挂起请求等用户重新登录；登录成功后自动重放
+          // 原请求（批量并发共享同一次登录，只弹一次框），页面无需手动刷新
+          await clearTokens();
+          final reloggedIn = await _ensureRelogin();
+          if (reloggedIn) {
+            // FormData（上传/拍照订正）流只能消费一次，无法重放，交给用户重试
+            if (error.requestOptions.data is FormData) {
+              handler.reject(_friendly('登录已恢复，请重试刚才的操作', error));
+              return;
+            }
+            try {
+              // fetch 会重新经过 onRequest 拦截器，附加新的 JWT/CSRF
+              final resp = await _dio.fetch(error.requestOptions);
+              handler.resolve(resp);
+            } catch (e) {
+              handler.reject(e is DioException
+                  ? e
+                  : _friendly('服务暂时不可用，请稍后再试', error));
+            }
+            return;
+          }
+          handler.reject(_friendly('登录状态已过期，请重新登录', error));
+          return;
+        }
+        if (status == 403) {
+          handler.reject(_friendly('抱歉，你没有权限执行此操作', error));
+          return;
+        }
+
+        String msg;
+        switch (error.type) {
+          case DioExceptionType.connectionTimeout:
+          case DioExceptionType.sendTimeout:
+          case DioExceptionType.receiveTimeout:
+            msg = '网络连接超时，请稍后再试';
+            break;
+          case DioExceptionType.connectionError:
+            msg = '无法连接服务器，请检查网络或服务器地址';
+            break;
+          case DioExceptionType.badCertificate:
+            msg = '服务器安全验证失败，请联系老师';
+            break;
+          default:
+            final data = error.response?.data;
+            final serverMsg = data is Map
+                ? (data['message'] ?? data['error'])?.toString()
+                : null;
+            // ponytail: 仅透传含中文的后端文案，英文/堆栈类技术信息一律不外显
+            final readable = serverMsg != null &&
+                RegExp(r'[一-鿿]').hasMatch(serverMsg);
+            msg = readable ? serverMsg : '服务暂时不可用，请稍后再试';
+        }
+        handler.reject(_friendly(msg, error));
       },
     ));
 
@@ -173,29 +229,28 @@ class SemecTeachingApi {
 
   // ── Token 管理（SecureStorage）────────────────────────────────────────────
   Future<void> _loadTokens() async {
-    _jwtToken = await _storage.read(key: _kJwtTokenKey);
-    _csrfToken = await _storage.read(key: _kCsrfTokenKey);
-    final userJson = await _storage.read(key: _kSemecUserKey);
-    if (userJson != null && userJson.isNotEmpty) {
-      try {
-        // 尝试解析为简单格式 id|username|role|realName
-        final parts = userJson.split('|');
-        if (parts.length >= 4) {
-          _currentUser = SemecUser(
-            id: int.tryParse(parts[0]) ?? 0,
-            username: parts[1],
-            role: parts[2],
-            realName: parts[3],
-          );
-        }
-      } catch (_) {}
+    try {
+      _jwtToken = await _storage.read(key: _kJwtTokenKey);
+      _csrfToken = await _storage.read(key: _kCsrfTokenKey);
+      final userJson = await _storage.read(key: _kSemecUserKey);
+      if (userJson != null && userJson.isNotEmpty) {
+        try {
+          // 尝试解析为简单格式 id|username|role|realName
+          final parts = userJson.split('|');
+          if (parts.length >= 4) {
+            _currentUser = SemecUser(
+              id: int.tryParse(parts[0]) ?? 0,
+              username: parts[1],
+              role: parts[2],
+              realName: parts[3],
+            );
+          }
+        } catch (_) {}
+      }
+    } finally {
+      // 无论读取成功与否都必须释放等待者（防永久挂起）
+      if (!tokensReady.isCompleted) tokensReady.complete();
     }
-  }
-
-  Future<String?> _getCsrfToken() async {
-    if (_csrfToken != null) return _csrfToken;
-    _csrfToken = await _storage.read(key: _kCsrfTokenKey);
-    return _csrfToken;
   }
 
   Future<void> _saveTokens({
@@ -228,6 +283,79 @@ class SemecTeachingApi {
     await _storage.delete(key: _kJwtTokenKey);
     await _storage.delete(key: _kCsrfTokenKey);
     await _storage.delete(key: _kSemecUserKey);
+  }
+
+  /// 把底层 DioException 转成只含友好文案的异常（$e 直接可见友好文本）
+  DioException _friendly(String msg, DioException error) => _FriendlyException(
+    msg,
+    requestOptions: error.requestOptions,
+    type: error.type,
+    response: error.response,
+  );
+
+  /// 401 重新登录门：并发 401 共用同一个弹窗与结果，登录成功返回 true。
+  /// 无可用 Navigator（如 App 启动早期）时直接失败，由页面走错误页重试。
+  Future<bool> _ensureRelogin() {
+    final gate = _reloginGate;
+    if (gate != null) return gate.future;
+
+    final completer = Completer<bool>();
+    _reloginGate = completer;
+    final ctx = appNavigatorKey.currentContext;
+    if (ctx == null) {
+      _reloginGate = null;
+      return Future.value(false);
+    }
+
+    var navigating = false;
+    showDialog<void>(
+      context: ctx,
+      barrierDismissible: false,
+      builder: (dialogCtx) => PopScope(
+        // 返回键关闭弹窗时必须释放等待队列，不能让并发请求永久挂起
+        onPopInvokedWithResult: (didPop, _) {
+          if (didPop && !navigating) _finishRelogin(false);
+        },
+        child: AlertDialog(
+          title: const Row(children: [
+            Icon(Icons.info_outline, size: 20, color: AppColors.amber),
+            SizedBox(width: 8),
+            Text('登录已过期'),
+          ]),
+          content: const Text('为了保证账号安全，请重新登录后再查看作业。'),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogCtx).pop();
+                _finishRelogin(false);
+              },
+              child: const Text('稍后'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                navigating = true;
+                Navigator.of(dialogCtx).pop();
+                final ok =
+                    await Navigator.of(ctx).push<bool>(MaterialPageRoute(
+                  fullscreenDialog: true,
+                  builder: (_) =>
+                      const LoginScreen(reason: '登录状态已过期，请重新登录'),
+                ));
+                _finishRelogin(ok ?? false);
+              },
+              child: const Text('重新登录'),
+            ),
+          ],
+        ),
+      ),
+    );
+    return completer.future;
+  }
+
+  void _finishRelogin(bool ok) {
+    final c = _reloginGate;
+    _reloginGate = null;
+    if (c != null && !c.isCompleted) c.complete(ok);
   }
 
   // ── 登录 ──────────────────────────────────────────────────────────────────
@@ -310,14 +438,26 @@ class SemecTeachingApi {
         user: user,
       );
     } on DioException catch (e) {
+      // 登录接口 422 返回 {"error":"用户名或密码错误"}，字段名是 error；
+      // 只外显中文文案，Dio 英文异常不外泄
+      final data = e.response?.data;
+      final serverMsg = data is Map
+          ? (data['message'] ?? data['error'])?.toString()
+          : null;
+      final readable = serverMsg != null &&
+          RegExp(r'[一-鿿]').hasMatch(serverMsg);
       return SemecLoginResult(
         success: false,
-        message: e.response?.data?['message'] ?? e.message ?? '网络错误',
+        message: readable
+            ? serverMsg
+            : (e.type == DioExceptionType.connectionError
+                ? '无法连接服务器，请检查网络或服务器地址'
+                : '登录失败，请检查账号或密码'),
       );
-    } catch (e) {
-      return SemecLoginResult(
+    } catch (_) {
+      return const SemecLoginResult(
         success: false,
-        message: e.toString(),
+        message: '登录失败，请稍后再试',
       );
     }
   }
@@ -519,6 +659,35 @@ class SemecTeachingApi {
     throw Exception(resp.data?['message'] ?? '获取作业列表失败');
   }
 
+  /// 下载作业卷面 PDF（GET /api/assignments/:id/paper-pdf）
+  /// 走同一 dio 实例以携带 JWT cookie；仅 homework 类型有入口（对齐网页端）
+  Future<Uint8List> downloadAssignmentPdf(
+    int assignId, {
+    void Function(int received, int total)? onProgress,
+  }) async {
+    try {
+      final resp = await _dio.get(
+        '/api/assignments/$assignId/paper-pdf',
+        options: Options(responseType: ResponseType.bytes),
+        onReceiveProgress: onProgress,
+      );
+      if (resp.statusCode == 200) return resp.data as Uint8List;
+      throw Exception('下载失败：HTTP ${resp.statusCode}');
+    } on DioException catch (e) {
+      // 错误响应是 JSON 但按 bytes 请求：解出后端中文文案（如"试卷文件尚未生成"）
+      final data = e.response?.data;
+      String? serverMsg;
+      if (data is List<int>) {
+        try {
+          final j = jsonDecode(utf8.decode(data)) as Map<String, dynamic>;
+          serverMsg = (j['message'] ?? j['error'])?.toString();
+        } catch (_) {}
+      }
+      if (serverMsg != null) throw Exception(serverMsg);
+      rethrow; // 401/403/网络错误已被拦截器转成友好文案
+    }
+  }
+
   /// 创建上传任务（POST /api/answer/uploads，multipart 字段名 files）
   Future<PaperUploadCreated> createPaperUpload(
     List<File> files, {
@@ -630,6 +799,28 @@ class SemecTeachingApi {
     throw Exception(resp.data?['message'] ?? '订正提交失败');
   }
 
+  /// 在线订正（JSON POST 同 URL）：channel=online，answer_payload 与考试 student_answer 同构
+  /// 选择 {selectedAnswers:['B']} / 判断 true|false / 填空 {answers:['…']} / 文本 {text:'…'}
+  Future<CorrectionSubmitResult> submitOnlinePaperCorrection(
+    int resultId, {
+    required Map<String, dynamic> answerPayload,
+    List<int> errorTagIds = const [],
+  }) async {
+    final resp = await _dio.post(
+      '/api/answer/results/$resultId/corrections',
+      data: {
+        'channel': 'online',
+        'answer_payload': answerPayload,
+        if (errorTagIds.isNotEmpty) 'error_tag_ids': errorTagIds,
+      },
+    );
+    if (resp.statusCode == 200 && resp.data?['success'] == true) {
+      return CorrectionSubmitResult.fromJson(
+          Map<String, dynamic>.from(resp.data!['data']));
+    }
+    throw Exception(resp.data?['message'] ?? '订正提交失败');
+  }
+
   // ── 工具方法 ──────────────────────────────────────────────────────────────
   SemecUser? _parseJwt(String token) {
     try {
@@ -652,4 +843,17 @@ class SemecTeachingApi {
       return null;
     }
   }
+}
+
+/// toString 只输出友好文案，屏蔽 DioException 默认的技术性信息
+class _FriendlyException extends DioException {
+  _FriendlyException(
+    String message, {
+    required super.requestOptions,
+    super.type,
+    super.response,
+  }) : super(message: message);
+
+  @override
+  String toString() => message ?? '网络异常，请稍后再试';
 }

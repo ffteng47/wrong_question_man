@@ -138,7 +138,7 @@ class _PaperCaptureScreenState extends State<PaperCaptureScreen> {
                   child: ElevatedButton.icon(
                     onPressed: _submitting ? null : _pickFromCamera,
                     icon: const Icon(Icons.camera_alt_outlined, size: 18),
-                    label: const Text('拍照'),
+                    label: const Text('拍照上传'),
                   ),
                 ),
                 const SizedBox(width: 10),

@@ -298,7 +298,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
               child: ElevatedButton.icon(
                 onPressed: () => _pickImage(ImageSource.camera),
                 icon: const Icon(Icons.camera_alt_outlined),
-                label: const Text('拍照'),
+                label: const Text('拍照上传'),
               ),
             ),
             const SizedBox(height: 12),

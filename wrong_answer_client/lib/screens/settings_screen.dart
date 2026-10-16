@@ -5,6 +5,7 @@ import '../api/semec_teaching_api.dart';
 import '../services/sync_service.dart';
 import '../utils/server_config.dart';
 import '../utils/theme.dart';
+import 'login_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -15,16 +16,11 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final _urlCtrl = TextEditingController(text: ServerConfig.instance.apiBaseUrl);
-  final _semecUrlCtrl = TextEditingController(text: ServerConfig.instance.semecBaseUrl);
-  final _semecUserCtrl = TextEditingController();
-  final _semecPassCtrl = TextEditingController();
 
   bool _testing = false;
   Map<String, dynamic>? _health;
   String? _error;
 
-  bool _semecLoggingIn = false;
-  String? _semecError;
   SemecUser? _semecUser;
 
   @override
@@ -46,9 +42,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     _urlCtrl.dispose();
-    _semecUrlCtrl.dispose();
-    _semecUserCtrl.dispose();
-    _semecPassCtrl.dispose();
     super.dispose();
   }
 
@@ -63,40 +56,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // ── semecTeaching 登录 ──────────────────────────────────────────────────
-  Future<void> _semecLogin() async {
-    final username = _semecUserCtrl.text.trim();
-    final password = _semecPassCtrl.text;
-    if (username.isEmpty || password.isEmpty) {
-      setState(() => _semecError = '请输入用户名和密码');
-      return;
-    }
-
-    setState(() { _semecLoggingIn = true; _semecError = null; });
-
-    try {
-      await ServerConfig.instance.setSemecBaseUrl(_semecUrlCtrl.text.trim());
-      final result = await SemecTeachingApi.instance.login(username, password);
-
-      if (mounted) {
-        setState(() {
-          _semecLoggingIn = false;
-          if (result.success) {
-            _semecUser = result.user;
-            _semecUserCtrl.clear();
-            _semecPassCtrl.clear();
-          } else {
-            _semecError = result.message ?? '登录失败';
-          }
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _semecLoggingIn = false;
-          _semecError = e.toString();
-        });
-      }
+  // ── semecTeaching 登录（跳转专用登录页，返回后刷新账号状态）──────────────
+  Future<void> _openLogin() async {
+    final ok = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => const LoginScreen(),
+      ),
+    );
+    if (ok == true && mounted) {
+      setState(() => _semecUser = SyncService.instance.currentUser);
     }
   }
 
@@ -209,106 +178,102 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           const SizedBox(height: 12),
 
-          // 服务器地址
-          TextField(
-            controller: _semecUrlCtrl,
-            style: const TextStyle(
-                color: AppColors.textPrimary, fontFamily: 'monospace', fontSize: 13),
-            decoration: const InputDecoration(
-              hintText: 'http://192.168.x.x:3000',
-              prefixIcon: Icon(Icons.cloud_outlined,
-                  size: 18, color: AppColors.textMuted),
-              labelText: '服务器地址',
-              labelStyle: TextStyle(fontSize: 12),
+          // 账号卡片：未登录 → 去专用登录页；已登录 → 账号信息 + 退出
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: AppColors.bg1,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: AppColors.bg3),
             ),
+            child: _semecUser == null
+                ? Row(children: [
+                    Container(
+                      width: 38, height: 38,
+                      decoration: BoxDecoration(
+                        color: AppColors.bg2,
+                        borderRadius: BorderRadius.circular(9),
+                        border: Border.all(color: AppColors.bg3),
+                      ),
+                      child: const Icon(Icons.person_outline,
+                          size: 20, color: AppColors.textMuted),
+                    ),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('未登录',
+                              style: TextStyle(
+                                  color: AppColors.textPrimary,
+                                  fontSize: 14, fontWeight: FontWeight.w600)),
+                          SizedBox(height: 2),
+                          Text('登录后查看作业、批改与订正',
+                              style: TextStyle(
+                                  color: AppColors.textMuted, fontSize: 12)),
+                        ],
+                      ),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: _openLogin,
+                      icon: const Icon(Icons.login, size: 16),
+                      label: const Text('去登录'),
+                    ),
+                  ])
+                : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Row(children: [
+                      Container(
+                        width: 38, height: 38,
+                        decoration: BoxDecoration(
+                          color: AppColors.green.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(9),
+                        ),
+                        child: const Icon(Icons.verified_user_outlined,
+                            size: 20, color: AppColors.green),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                                _semecUser!.realName.isNotEmpty
+                                    ? _semecUser!.realName
+                                    : _semecUser!.username,
+                                style: const TextStyle(
+                                    color: AppColors.textPrimary,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600)),
+                            const SizedBox(height: 2),
+                            Text(
+                                '${_roleLabel(_semecUser!.role)} · '
+                                '${ServerConfig.instance.semecBaseUrl}',
+                                maxLines: 1, overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    color: AppColors.textMuted,
+                                    fontSize: 11,
+                                    fontFamily: 'monospace')),
+                          ],
+                        ),
+                      ),
+                    ]),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: _semecLogout,
+                        icon: const Icon(Icons.logout,
+                            size: 18, color: AppColors.red),
+                        label: const Text('退出登录',
+                            style: TextStyle(color: AppColors.red)),
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: AppColors.red),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                      ),
+                    ),
+                  ]),
           ),
-          const SizedBox(height: 12),
-
-          // 登录表单或已登录信息
-          if (_semecUser == null) ...[
-            TextField(
-              controller: _semecUserCtrl,
-              style: const TextStyle(
-                  color: AppColors.textPrimary, fontSize: 14),
-              decoration: const InputDecoration(
-                hintText: '用户名',
-                prefixIcon: Icon(Icons.person_outline,
-                    size: 18, color: AppColors.textMuted),
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _semecPassCtrl,
-              obscureText: true,
-              style: const TextStyle(
-                  color: AppColors.textPrimary, fontSize: 14),
-              decoration: const InputDecoration(
-                hintText: '密码',
-                prefixIcon: Icon(Icons.lock_outline,
-                    size: 18, color: AppColors.textMuted),
-              ),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: _semecLoggingIn ? null : _semecLogin,
-                icon: _semecLoggingIn
-                    ? const SizedBox(width: 16, height: 16,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: AppColors.bg0))
-                    : const Icon(Icons.login, size: 18),
-                label: Text(_semecLoggingIn ? '登录中…' : '登录'),
-              ),
-            ),
-          ] else ...[
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: AppColors.bg1,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: AppColors.bg3),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _infoRow('用户', _semecUser!.username),
-                  _infoRow('姓名', _semecUser!.realName),
-                  _infoRow('角色', _semecUser!.role),
-                  _infoRow('ID', '${_semecUser!.id}'),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: _semecLogout,
-                icon: const Icon(Icons.logout, size: 18, color: AppColors.red),
-                label: const Text('退出登录',
-                    style: TextStyle(color: AppColors.red)),
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: AppColors.red),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                ),
-              ),
-            ),
-          ],
-
-          if (_semecError != null) ...[
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppColors.red.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppColors.red.withOpacity(0.3)),
-              ),
-              child: Text(_semecError!,
-                  style: const TextStyle(
-                      color: AppColors.red, fontSize: 12)),
-            ),
-          ],
 
           const SizedBox(height: 32),
           const Divider(),
@@ -346,6 +311,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     ]),
   );
+
+  String _roleLabel(String role) => switch (role) {
+        'teacher' => '教师',
+        'student' => '学生',
+        _ => role,
+      };
 
   Widget _infoRow(String k, String v) => Padding(
     padding: const EdgeInsets.symmetric(vertical: 6),

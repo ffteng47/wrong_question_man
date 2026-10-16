@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import '../models/wrong_answer_record.dart';
 import '../services/sync_service.dart';
+import '../utils/app_navigator.dart';
 import '../utils/db_helper.dart';
 import '../utils/draft_helper.dart';
 import '../utils/theme.dart';
@@ -44,21 +45,6 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _load() async {
     setState(() => _loading = true);
     final isTeacher = SyncService.instance.currentUser?.role == 'teacher';
-    
-    // Token失效检测：如果是教师且未登录semecTeaching，提示登录
-    if (isTeacher && !SyncService.instance.isLoggedIn) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('未登录 semecTeaching，部分功能（如分配学生）需要登录后才能使用'),
-              duration: Duration(seconds: 5),
-            ),
-          );
-        }
-      });
-    }
-    
     final records = await DbHelper.instance.query(
       subject: _filterSubject,
       grade: _filterGrade,
@@ -85,13 +71,14 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('错题本'),
         actions: [
-          // 学生：判题任务列表入口
+          // 学生：判题任务列表入口（需登录学校账号）
           if (SyncService.instance.currentUser?.role == 'student')
             IconButton(
               icon: const Icon(Icons.assignment_outlined),
-              onPressed: () => Navigator.push(context,
-                  MaterialPageRoute(builder: (_) =>
-                      const PaperTaskListScreen())),
+              onPressed: () => _openPaperAfterLogin(
+                  () => Navigator.push(context,
+                      MaterialPageRoute(builder: (_) =>
+                          const PaperTaskListScreen()))),
               tooltip: '作业任务',
             ),
           IconButton(
@@ -192,25 +179,13 @@ class _HomeScreenState extends State<HomeScreen> {
           // 纸面作业链路入口（多页连拍/批量上传，需登录学校服务器）
           FloatingActionButton.extended(
             heroTag: 'paper',
-            onPressed: () {
-              final user = SyncService.instance.currentUser;
-              if (user == null || !SyncService.instance.isLoggedIn) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('作业链路需在学校内登录：设置 → semecTeaching 登录'),
-                    duration: Duration(seconds: 4),
-                  ),
-                );
-                return;
-              }
-              Navigator.push(context,
-                  MaterialPageRoute(builder: (_) =>
-                      const PaperPickScreen()));
-            },
+            onPressed: () => _openPaperAfterLogin(() => Navigator.push(context,
+                MaterialPageRoute(builder: (_) =>
+                    const PaperPickScreen()))),
             backgroundColor: AppColors.green,
             foregroundColor: AppColors.bg0,
             icon: const Icon(Icons.document_scanner_outlined),
-            label: const Text('纸面作业',
+            label: const Text('我的作业',
                 style: TextStyle(fontWeight: FontWeight.w600)),
           ),
           const SizedBox(height: 12),
@@ -231,9 +206,21 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// 未登录 → 专用登录页；登录成功后继续打开目标页（取消则什么都不发生）
+  Future<void> _openPaperAfterLogin(VoidCallback openTarget) async {
+    final ok = await ensureLoggedIn(context,
+        reason: '登录学校账号，查看作业、批改结果与订正');
+    if (!ok || !mounted) return;
+    _load(); // 角色相关 UI（作业任务入口等）随登录态刷新
+    openTarget();
+  }
+
   // ── 教师批量分配 ───────────────────────────────────────────────────────────
   Future<void> _assignSelected() async {
     if (_selectedRecordIds.isEmpty) return;
+    final ok = await ensureLoggedIn(context,
+        reason: '登录教师账号后才能把错题分配给学生');
+    if (!ok || !mounted) return;
     final result = await Navigator.push<AssignResult>(context,
       MaterialPageRoute(builder: (_) => const AssignStudentScreen()));
     if (result == null) return;

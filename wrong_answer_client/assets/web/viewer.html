@@ -1,0 +1,102 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<link rel="stylesheet" href="vendor/katex.min.css">
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body {
+    color: #E6EDF3;
+    font-family: -apple-system, "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.7;
+    word-wrap: break-word;
+    -webkit-text-size-adjust: 100%;
+  }
+  p { margin: 0 0 8px; }
+  p:last-child { margin-bottom: 0; }
+  h1, h2, h3, h4 { margin: 12px 0 6px; line-height: 1.4; }
+  ul, ol { margin: 4px 0; padding-left: 22px; }
+  img { max-width: 100%; border-radius: 6px; }
+  code { background: #21262D; border-radius: 4px; padding: 1px 5px;
+         font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.92em; }
+  pre { background: #21262D; border: 1px solid #30363D; border-radius: 8px;
+        padding: 10px; overflow-x: auto; }
+  pre code { background: transparent; padding: 0; }
+  blockquote { margin: 4px 0; padding-left: 10px;
+               border-left: 3px solid #E6A817; color: #8B949E; }
+  /* 表格：设计稿 §6.2 的暗色版，宽表横向滚动不挤压 */
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch;
+                margin: 6px 0; }
+  table { border-collapse: collapse; font-size: 14px; }
+  th, td { border: 1px solid #30363D; padding: 6px 10px; text-align: left; }
+  th { background: #21262D; font-weight: 600; }
+  .katex { font-size: 1.04em; }
+</style>
+</head>
+<body>
+<div id="content"></div>
+
+<script src="vendor/markdown-it.min.js"></script>
+<script>
+/* @iktakahiro/markdown-it-katex 是 CommonJS，浏览器内垫片后加载 */
+window.module = { exports: {} };
+window.require = function (n) { return n === 'katex' ? window.katex : {}; };
+</script>
+<script src="vendor/katex.min.js"></script>
+<script src="vendor/markdown-it-katex.js"></script>
+<script>
+(function () {
+  var md = window.markdownit({
+        html: true, linkify: true, typographer: false, breaks: false
+      }).use(window.module.exports, {
+        throwOnError: false, strict: false, trust: true
+      });
+
+  /* 与网页端 markdownRenderer.js 同款预处理器 */
+  function preprocess(s) {
+    s = s.replace(/\$\{?\}\^\{?\\circ\}?\\mathrm\{C\}\$/g, '°C');           // 度符号
+    s = s.replace(/(\$\$[\s\S]+?\$\$)/g, '\n\n$1\n\n');                    // 块公式独立成段
+    s = s.replace(/\$([^$\n]+?)\s+\$/g, function (m, f) { return '$' + f.trimEnd() + '$'; }); // 尾空格
+    s = s.replace(/(<br\s*\/?>)\$/gi, '$1 $');                             // br 与公式边界
+    s = s.replace(/(\$[^$]+\$)[ \t]*_{2,}/g, function (m, f) {             // 填空下划线
+      return f.replace(/\$$/, '') + ' \\underline{\\quad}$';
+    });
+    return s;
+  }
+
+  function measure() {
+    try {
+      var h = Math.max(document.documentElement.scrollHeight,
+                       document.body.scrollHeight,
+                       document.getElementById('content').offsetHeight);
+      MathHtml.postMessage(String(h));
+    } catch (e) {}
+  }
+
+  window.render = function (payload) {
+    var box = document.getElementById('content');
+    box.innerHTML = md.render(preprocess(payload.content || ''));
+    document.body.style.fontSize = (payload.fontSize || 15) + 'px';
+    /* 宽表包一层横向滚动容器 */
+    box.querySelectorAll('table').forEach(function (t) {
+      if (t.parentNode && t.parentNode.classList
+          && t.parentNode.classList.contains('table-wrap')) return;
+      var w = document.createElement('div');
+      w.className = 'table-wrap';
+      t.parentNode.insertBefore(w, t);
+      w.appendChild(t);
+    });
+    measure();
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(measure);
+    setTimeout(measure, 120);
+    setTimeout(measure, 500);
+    Array.prototype.forEach.call(box.querySelectorAll('img'), function (img) {
+      img.addEventListener('load', measure);
+      img.addEventListener('error', measure);
+    });
+  };
+})();
+</script>
+</body>
+</html>

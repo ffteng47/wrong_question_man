@@ -8,6 +8,8 @@ class PaperAssignment {
   final int? paperId;
   final String examTitle;
   final String? paperTitle;
+  /// exam=考试 homework=作业 practice=练习 mental=口算（papers.paper_type）
+  final String? paperType;
   final String? subject;
   final String? gradeName;
   final String? teacherName;
@@ -19,6 +21,7 @@ class PaperAssignment {
     this.paperId,
     required this.examTitle,
     this.paperTitle,
+    this.paperType,
     this.subject,
     this.gradeName,
     this.teacherName,
@@ -31,12 +34,25 @@ class PaperAssignment {
     paperId: (j['paper_id'] as num?)?.toInt(),
     examTitle: j['exam_title'] ?? '',
     paperTitle: j['paper_title'],
+    paperType: j['paper_type'] as String?,
     subject: j['subject'],
     gradeName: j['grade_name'],
     teacherName: j['teacher_name'],
     endTime: j['end_time']?.toString(),
     uploadCount: (j['upload_count'] as num?)?.toInt() ?? 0,
   );
+
+  /// 类型中文文案，对齐网页端 typeText
+  String get paperTypeLabel => switch (paperType) {
+    'exam' => '考试',
+    'homework' => '作业',
+    'practice' => '练习',
+    'mental' => '口算',
+    _ => '试卷',
+  };
+
+  /// 仅「作业」类型在网页端提供下载 PDF 试卷（MyExams 下钻详情层）
+  bool get isHomework => paperType == 'homework';
 }
 
 class PaperUploadCreated {
@@ -65,6 +81,7 @@ class PaperUploadRow {
   final int id;
   final String uploadNo;
   final String? paperTitle;
+  final int? assignId;
   final int totalPages;
   final String status;
   final String createdAt;
@@ -74,6 +91,7 @@ class PaperUploadRow {
     required this.id,
     required this.uploadNo,
     this.paperTitle,
+    this.assignId,
     required this.totalPages,
     required this.status,
     required this.createdAt,
@@ -84,6 +102,7 @@ class PaperUploadRow {
     id: (j['id'] as num?)?.toInt() ?? 0,
     uploadNo: j['upload_no'] ?? '',
     paperTitle: j['paper_title'],
+    assignId: (j['assign_id'] as num?)?.toInt(),
     totalPages: (j['total_pages'] as num?)?.toInt() ?? 0,
     status: j['status'] ?? '',
     createdAt: j['created_at']?.toString() ?? '',
@@ -124,6 +143,10 @@ class PaperResult {
   final String? questionContent;
   final String? questionAnswer;
   final String? questionType;
+  /// 题目解析（question_bank.solution / 快照兜底，可能为空）
+  final String? questionSolution;
+  /// 选择题选项（["A. …","B. …"]），在线订正点选用；无选项数据为 null
+  final List<String>? questionOptions;
   final String grade; // correct | wrong | partial | pending_teacher
   final double? score;
   final double? maxScore;
@@ -142,6 +165,8 @@ class PaperResult {
     this.questionContent,
     this.questionAnswer,
     this.questionType,
+    this.questionSolution,
+    this.questionOptions,
     required this.grade,
     this.score,
     this.maxScore,
@@ -164,6 +189,10 @@ class PaperResult {
       questionContent: j['question_content'],
       questionAnswer: j['question_answer'],
       questionType: j['question_type'],
+      questionSolution: j['question_solution'] as String?,
+      questionOptions: (j['question_options'] as List?)
+          ?.map((e) => e.toString())
+          .toList(),
       grade: j['grade'] ?? 'pending_teacher',
       score: (j['score'] as num?)?.toDouble(),
       maxScore: (j['max_score'] as num?)?.toDouble(),

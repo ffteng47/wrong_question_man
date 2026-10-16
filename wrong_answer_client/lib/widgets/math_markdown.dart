@@ -47,29 +47,110 @@ class _MathMarkdownBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 把 Markdown 文本按 $...$ 分段，混合渲染文本和公式
-    final segments = _parseSegments(data);
+    // $$块公式$$ 独立居中；块之间的文本走 Text.rich 流式渲染（行内公式内嵌），
+    // 不再把每个 $公式$ 切成独立段——旧实现节点间强制断行，连续行文被拆成
+    // 一段一段（与网页端 joinNodes 之前的 \n\n bug 同构）
+    final blocks = _parseBlocks(data);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: segments.map((seg) {
-        if (seg.isFormula) {
-          return Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: _buildFormula(seg.content, block: seg.isBlock),
-          );
-        }
-        // 普通 Markdown 段落
-        if (seg.content.trim().isEmpty) return const SizedBox(height: 8);
-        return MarkdownBody(
-          data: seg.content,
-          selectable: selectable,
-          imageBuilder: (uri, title, alt) => _buildRemoteImage(uri),
-          styleSheet: _buildStyleSheet(context, fontSize),
-          extensionSet: md.ExtensionSet.gitHubWeb,
-        );
-      }).toList(),
+      children: [
+        for (final b in blocks)
+          if (b.isFormula)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Center(child: _buildFormula(b.content, block: true)),
+            )
+          else
+            _renderTextBlock(context, b.content),
+      ],
     );
+  }
+
+  /// 块级 Markdown 特征（表格/图片/标题/列表/引用/代码块）：含这些才走
+  /// MarkdownBody 重路径；普通行文（含行内公式、<br>）走 Text.rich 轻路径
+  static final _heavyMarkdown = RegExp(
+    r'(^\s{0,3}#{1,6}\s)|(^\s*\|.*\|\s*$)|(!\[)|'
+    r'(^\s*(?:[-*+]|\d+[.)])\s+)|(```)|(^\s{0,3}>\s)|(^\s*[-*_]{3,}\s*$)',
+    multiLine: true,
+  );
+
+  /// <br>（含 <br/> <br />）统一识别
+  static final _brRe = RegExp(r'<br\s*/?>', caseSensitive: false);
+
+  Widget _renderTextBlock(BuildContext context, String raw) {
+    // 库里不少解析以 <br> 起头，trim 避免首行空行
+    final text = raw.replaceAll(_brRe, '\n').trim();
+    if (text.isEmpty) return const SizedBox.shrink();
+    if (_heavyMarkdown.hasMatch(text)) {
+      // 重 Markdown：退回 MarkdownBody 分段渲染（行内公式仍被拆出），
+      // 单换行升级为段落，保证 <br> 在 Markdown 路径下也成立
+      final segs = _parseSegments(text.replaceAll('\n', '\n\n'));
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final seg in segs)
+            if (seg.isFormula)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: _buildFormula(seg.content, block: seg.isBlock),
+              )
+            else if (seg.content.trim().isNotEmpty)
+              MarkdownBody(
+                data: seg.content,
+                selectable: selectable,
+                imageBuilder: (uri, title, alt) => _buildRemoteImage(uri),
+                styleSheet: _buildStyleSheet(context, fontSize),
+                extensionSet: md.ExtensionSet.gitHubWeb,
+              ),
+        ],
+      );
+    }
+    // 轻路径：单个 Text.rich，行内公式 WidgetSpan 内嵌，连续行文不强制断段
+    return Text.rich(
+      TextSpan(children: _inlineSpans(text)),
+      softWrap: true,
+    );
+  }
+
+  static final _inlineTokenRe =
+      RegExp(r'\$([^$\n]+?)\$|\*\*([^*\n]+?)\*\*');
+
+  List<InlineSpan> _inlineSpans(String text) {
+    final base = TextStyle(
+      color: AppColors.textPrimary,
+      fontSize: fontSize,
+      height: 1.65,
+    );
+    final spans = <InlineSpan>[];
+    var pos = 0;
+    for (final m in _inlineTokenRe.allMatches(text)) {
+      if (m.start > pos) {
+        spans.add(TextSpan(text: text.substring(pos, m.start), style: base));
+      }
+      final formula = m.group(1);
+      if (formula != null) {
+        spans.add(WidgetSpan(
+          alignment: PlaceholderAlignment.middle,
+          child: Math.tex(
+            formula.trim(),
+            textStyle: base,
+            onErrorFallback: (e) => Text(formula,
+                style: base.copyWith(
+                    fontFamily: 'monospace', color: AppColors.purple)),
+          ),
+        ));
+      } else {
+        spans.add(TextSpan(
+            text: m.group(2),
+            style: base.copyWith(fontWeight: FontWeight.w700)));
+      }
+      pos = m.end;
+    }
+    if (pos < text.length) {
+      spans.add(TextSpan(text: text.substring(pos), style: base));
+    }
+    return spans;
   }
 
   Widget _buildFormula(String tex, {bool block = false}) {
@@ -175,6 +256,26 @@ class _MathMarkdownBody extends StatelessWidget {
 }
 
 // ── 文本段解析（分离公式和普通文本）─────────────────────────────────────────
+
+/// 块级分段：$$...$$ 公式块 vs 普通文本块
+class _Block {
+  final String content;
+  final bool isFormula;
+  _Block(this.content, {this.isFormula = false});
+}
+
+List<_Block> _parseBlocks(String text) {
+  final blocks = <_Block>[];
+  final blockRe = RegExp(r'\$\$([\s\S]+?)\$\$');
+  var pos = 0;
+  for (final m in blockRe.allMatches(text)) {
+    if (m.start > pos) blocks.add(_Block(text.substring(pos, m.start)));
+    blocks.add(_Block(m.group(1)!.trim(), isFormula: true));
+    pos = m.end;
+  }
+  if (pos < text.length) blocks.add(_Block(text.substring(pos)));
+  return blocks;
+}
 
 class _Segment {
   final String content;
